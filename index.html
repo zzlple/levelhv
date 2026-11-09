@@ -51,8 +51,8 @@
   .cross2{top:50%;left:8%;right:8%;height:1px;transform:translateY(-.5px)}
   .target{position:absolute;left:50%;top:50%;width:13%;height:13%;transform:translate(-50%,-50%);
     border-radius:50%;border:1px dashed rgba(120,220,255,.45)}
-  .bubble{position:absolute;left:50%;top:50%;width:22%;height:22%;transform:translate(-50%,-50%);
-    border-radius:50%;
+  .bubble{position:absolute;left:50%;top:50%;width:15%;height:15%;transform:translate(-50%,-50%);
+    border-radius:50%;display:flex;align-items:center;justify-content:center;
     background:radial-gradient(circle at 38% 32%,#eafff4 0%,#4df0a0 42%,#19b96a 100%);
     box-shadow:0 0 18px rgba(40,224,122,.55),0 0 60px rgba(40,224,122,.18),inset 0 0 10px rgba(255,255,255,.35);
     transition:background .18s,box-shadow .18s}
@@ -62,10 +62,12 @@
     box-shadow:0 0 18px rgba(255,93,93,.55),0 0 60px rgba(255,93,93,.18),inset 0 0 10px rgba(255,255,255,.35)}
   .needle{position:absolute;left:50%;top:50%;width:2px;height:50%;transform-origin:50% 0;
     background:linear-gradient(to bottom,rgba(120,220,255,.85),rgba(120,220,255,0));border-radius:2px;opacity:.35}
-  .gauge-val{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
-    text-align:center;pointer-events:none;opacity:.95}
-  .gauge-val b{display:block;font-size:clamp(18px,4.4vh,30px);font-variant-numeric:tabular-nums;letter-spacing:.02em}
-  .gauge-val span{font-size:10px;color:var(--dim);letter-spacing:.18em}
+  .gauge-val{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;pointer-events:none;color:#04331f;text-shadow:0 1px 2px rgba(255,255,255,.28)}
+  .gauge-val b{display:block;font-size:clamp(12px,3.1vh,17px);font-weight:800;font-variant-numeric:tabular-nums;
+    letter-spacing:-.03em;line-height:1.02}
+  .gauge-val span{font-size:7.5px;letter-spacing:.1em;opacity:.75;margin-top:1px}
+  body.bad .gauge-val{color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.42)}
 
   /* 读数区 */
   .readouts{flex:1 1 auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:clamp(8px,1.6vh,14px);
@@ -165,11 +167,10 @@
         <div class="cross"></div>
         <div class="cross2"></div>
         <div class="target"></div>
-        <div class="limit-line up" id="limUp"><span id="limUpTag">21° 离去角</span></div>
-        <div class="limit-line down" id="limDown"><span id="limDownTag">19° 接近角</span></div>
+        <div class="limit-line up" id="limUp"><span id="limUpTag">19° 离去角</span></div>
+        <div class="limit-line down" id="limDown"><span id="limDownTag">17° 接近角</span></div>
         <div class="needle" id="needle"></div>
-        <div class="bubble" id="bubble"></div>
-        <div class="gauge-val"><b id="gv">--</b><span>DEG</span></div>
+        <div class="bubble" id="bubble"><div class="gauge-val"><b id="gv">--</b><span>LON °</span></div></div>
       </div>
     </div>
 
@@ -177,8 +178,8 @@
       <div class="card"><div class="k">横向 LATERAL</div><div class="v" id="vLat">--<em>°</em></div></div>
       <div class="card"><div class="k">纵向 LONGITUDINAL</div><div class="v" id="vLon">--<em>°</em></div>
         <div class="lim-tags">
-          <span class="lim-tag" id="tagApp">接近 19°</span>
-          <span class="lim-tag" id="tagDep">离去 21°</span>
+          <span class="lim-tag" id="tagApp">接近 17°</span>
+          <span class="lim-tag" id="tagDep">离去 19°</span>
         </div>
       </div>
       <div class="card total"><div class="k">合成倾角 TOTAL</div><div class="v" id="vTot">--<em>°</em></div></div>
@@ -192,7 +193,7 @@
     <button class="ghost" id="btnFlip">↕ 车头</button>
     <button class="ghost" id="btnFull">全屏</button>
   </footer>
-  <div class="hint" id="hint">首次请点上方“启用传感器”；接近角 19° / 离去角 21° 超限将「嘀嘀嘀」报警</div>
+  <div class="hint" id="hint">首次请先启用传感器；荣放 20 款后保守限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留出前杠与排气管余量），超限「嘀嘀嘀」报警</div>
 </div>
 
 <div id="gate">
@@ -231,8 +232,11 @@
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
 
   /* ---- 车辆通过性限位 ---- */
-  var APPROACH  = 19;       // 接近角
-  var DEPARTURE = 21;       // 离去角
+  // 荣放 RAV4（2020 款及以后，XA50 平台）官方：接近角 18.1° / 离去角 20.3°
+  // 保守取值：为防左右前杠下沿、后排气管剐蹭，各下调约 1°，提前报警
+  var APPROACH  = 17;       // 接近角（保守）
+  var DEPARTURE = 19;       // 离去角（保守）
+  var VIEW_RATIO = 0.86;    // 限位线所在半径比例：气泡到达线 = 已达保守极限
   var PRE_ALERT = 3;        // 提前预警距离（度）
   var HEADING = 1;          // 1 = 手机顶部朝车头；-1 = 顶部朝车尾
 
@@ -367,8 +371,12 @@
     var rMax = w * MAX_OFFSET;
     var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;  // 气泡向上所对应的角
     var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
-    elLimUp.style.top   = 'calc(50% + ' + (-rMax * upLimit   / 45).toFixed(1) + 'px)';
-    elLimDown.style.top = 'calc(50% + ' + ( rMax * downLimit / 45).toFixed(1) + 'px)';
+    elLimUp.style.top   = 'calc(50% + ' + (-rMax * VIEW_RATIO).toFixed(1) + 'px)';
+    elLimDown.style.top = 'calc(50% + ' + ( rMax * VIEW_RATIO).toFixed(1) + 'px)';
+    elUpTag.textContent   = upLimit + '° ' + (HEADING === 1 ? '离去角' : '接近角');
+    elDownTag.textContent = downLimit + '° ' + (HEADING === 1 ? '接近角' : '离去角');
+    elTagApp.textContent = '接近 ' + APPROACH + '°';
+    elTagDep.textContent = '离去 ' + DEPARTURE + '°';
   }
 
   // 嘀嘀嘀：超限 = 三连急响后停顿；预警 = 慢速单响
@@ -398,12 +406,16 @@
     elLat.innerHTML = fmt(lat) + '<em>°</em>';
     elLon.innerHTML = fmt(lon) + '<em>°</em>';
     elTot.innerHTML = fmt(tot) + '<em>°</em>';
-    elGv.textContent = fmt(lat) + ' / ' + fmt(lon);
+    // 圆球只显示纵向数值（车头/车尾俯仰）
+    elGv.textContent = fmt(lon);
 
-    // 气泡位置：角度 → 偏移量（±45° 映射到最大半径）
+    // 气泡位置：纵向按各自的限位角归一化，到达限位线即超限
     var rMax = (elBubble.parentElement ? elBubble.parentElement.clientWidth : 300) * MAX_OFFSET;
-    var nx = Math.max(-1, Math.min(1, lat / 45));
-    var ny = Math.max(-1, Math.min(1, -lon / 45));  // 顶部抬起 → 气泡向后（向下）
+    var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;
+    var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
+    var lonLimit  = lon >= 0 ? upLimit : downLimit;
+    var nx = Math.max(-1, Math.min(1, (lat / 30) * VIEW_RATIO));
+    var ny = Math.max(-1, Math.min(1, (-lon / lonLimit) * VIEW_RATIO));  // 顶部抬起 → 气泡向后（向下）
     // 平滑
     state.smooth.x += (nx - state.smooth.x) * 0.25;
     state.smooth.y += (ny - state.smooth.y) * 0.25;
@@ -565,15 +577,7 @@
 
   $('btnFlip').addEventListener('click', function(){
     HEADING = -HEADING;
-    if (HEADING === 1){
-      elUpTag.textContent = '21° 离去角';
-      elDownTag.textContent = '19° 接近角';
-      this.textContent = '↕ 车头↑';
-    } else {
-      elUpTag.textContent = '19° 接近角';
-      elDownTag.textContent = '21° 离去角';
-      this.textContent = '↕ 车头↓';
-    }
+    this.textContent = HEADING === 1 ? '↕ 车头↑' : '↕ 车头↓';
     layoutLimits();
     vibrate(15);
     elHint.textContent = HEADING === 1
