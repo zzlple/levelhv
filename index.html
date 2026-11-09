@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="水平仪">
+<meta name="theme-color" content="#06080b">
+<title>水平仪 · Level</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  :root{
+    --bg:#06080b; --panel:#0f141a; --line:#1d2733;
+    --txt:#e8eef6; --dim:#7c8b9c;
+    --ok:#28e07a; --warn:#ffc53d; --bad:#ff5d5d;
+    --sa-t:env(safe-area-inset-top,0px);
+    --sa-b:env(safe-area-inset-bottom,0px);
+    --sa-l:env(safe-area-inset-left,0px);
+    --sa-r:env(safe-area-inset-right,0px);
+  }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",Arial,sans-serif;
+    overflow:hidden;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
+  #app{height:100%;display:flex;flex-direction:column;
+    padding:calc(var(--sa-t) + 10px) calc(var(--sa-r) + 14px) calc(var(--sa-b) + 10px) calc(var(--sa-l) + 14px);gap:10px}
+
+  /* ---------- 顶栏 ---------- */
+  header{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+  .brand{font-size:15px;font-weight:700;letter-spacing:.08em;color:var(--txt)}
+  .brand small{font-weight:500;color:var(--dim);letter-spacing:0;margin-left:6px;font-size:11px}
+  .status{margin-left:auto;font-size:11px;padding:4px 9px;border-radius:999px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+  .status.on{color:var(--ok);border-color:rgba(40,224,122,.35);background:rgba(40,224,122,.08)}
+  .status.err{color:var(--bad);border-color:rgba(255,93,93,.35);background:rgba(255,93,93,.08)}
+
+  /* ---------- 主体 ---------- */
+  main{flex:1 1 auto;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:clamp(14px,4vw,44px);min-height:0}
+
+  /* 气泡盘 */
+  .gauge-wrap{position:relative;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+    width:min(58vh,58vw,360px);height:min(58vh,58vw,360px)}
+  .gauge{position:absolute;inset:0;border-radius:50%;
+    background:radial-gradient(circle at 50% 42%,#131c25 0%,#0a1017 70%,#070b10 100%);
+    border:1px solid var(--line);
+    box-shadow:inset 0 0 40px rgba(0,0,0,.85),0 0 0 6px rgba(255,255,255,.015)}
+  .ring{position:absolute;border-radius:50%;border:1px solid rgba(255,255,255,.07)}
+  .ring.r1{inset:12.5%} .ring.r2{inset:25%} .ring.r3{inset:37.5%}
+  .cross,.cross2{position:absolute;background:rgba(255,255,255,.07)}
+  .cross{left:50%;top:8%;bottom:8%;width:1px;transform:translateX(-.5px)}
+  .cross2{top:50%;left:8%;right:8%;height:1px;transform:translateY(-.5px)}
+  .target{position:absolute;left:50%;top:50%;width:13%;height:13%;transform:translate(-50%,-50%);
+    border-radius:50%;border:1px dashed rgba(120,220,255,.45)}
+  .bubble{position:absolute;left:50%;top:50%;width:22%;height:22%;transform:translate(-50%,-50%);
+    border-radius:50%;
+    background:radial-gradient(circle at 38% 32%,#eafff4 0%,#4df0a0 42%,#19b96a 100%);
+    box-shadow:0 0 18px rgba(40,224,122,.55),0 0 60px rgba(40,224,122,.18),inset 0 0 10px rgba(255,255,255,.35);
+    transition:background .18s,box-shadow .18s}
+  body.warn .bubble{background:radial-gradient(circle at 38% 32%,#fff6dd 0%,#ffc53d 42%,#d99400 100%);
+    box-shadow:0 0 18px rgba(255,197,61,.55),0 0 60px rgba(255,197,61,.18),inset 0 0 10px rgba(255,255,255,.35)}
+  body.bad .bubble{background:radial-gradient(circle at 38% 32%,#ffe4e4 0%,#ff5d5d 42%,#c62828 100%);
+    box-shadow:0 0 18px rgba(255,93,93,.55),0 0 60px rgba(255,93,93,.18),inset 0 0 10px rgba(255,255,255,.35)}
+  .needle{position:absolute;left:50%;top:50%;width:2px;height:50%;transform-origin:50% 0;
+    background:linear-gradient(to bottom,rgba(120,220,255,.85),rgba(120,220,255,0));border-radius:2px;opacity:.35}
+  .gauge-val{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    text-align:center;pointer-events:none;opacity:.95}
+  .gauge-val b{display:block;font-size:clamp(18px,4.4vh,30px);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .gauge-val span{font-size:10px;color:var(--dim);letter-spacing:.18em}
+
+  /* 读数区 */
+  .readouts{flex:1 1 auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:clamp(8px,1.6vh,14px);
+    max-width:520px;width:100%}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    padding:clamp(8px,1.8vh,16px) clamp(10px,1.6vw,16px);display:flex;flex-direction:column;justify-content:center;min-height:0}
+  .card .k{font-size:11px;color:var(--dim);letter-spacing:.12em;margin-bottom:2px}
+  .card .v{font-size:clamp(26px,7.6vh,52px);font-weight:800;font-variant-numeric:tabular-nums;
+    line-height:1.04;letter-spacing:-.02em;transition:color .18s}
+  .card .v em{font-size:.42em;font-weight:600;font-style:normal;color:var(--dim);margin-left:3px}
+  .card.total{grid-column:1 / -1}
+  .card.total .v{font-size:clamp(22px,6vh,42px)}
+  body.ok .card .v{color:var(--ok)}
+  body.warn .card .v{color:var(--warn)}
+  body.bad .card .v{color:var(--bad)}
+
+  /* 底栏 */
+  footer{flex:0 0 auto;display:flex;align-items:center;gap:10px}
+  button{appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--txt);
+    font-family:inherit;font-size:14px;font-weight:600;padding:12px 16px;border-radius:14px;
+    min-height:48px;flex:1 1 0;transition:transform .08s,background .15s,border-color .15s}
+  button:active{transform:scale(.975);background:#161e27}
+  button.primary{background:linear-gradient(180deg,#1c8f55,#136b3f);border-color:rgba(40,224,122,.45);color:#eafff4}
+  button.ghost{flex:0 0 auto;padding:12px 14px;color:var(--dim);font-weight:500}
+  .hint{font-size:11px;color:var(--dim);text-align:center;line-height:1.5}
+
+  /* 遮罩授权层 */
+  #gate{position:fixed;inset:0;z-index:50;background:rgba(4,6,9,.94);backdrop-filter:blur(8px);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:28px;text-align:center}
+  #gate.hide{display:none}
+  #gate h1{font-size:20px;margin:0;letter-spacing:.04em}
+  #gate p{font-size:13px;color:var(--dim);line-height:1.7;margin:0;max-width:340px}
+  #gate button{flex:0 0 auto;min-width:200px;font-size:16px;padding:15px 26px}
+  #gate .mono{font-size:11px;color:#4c5a69;letter-spacing:.06em}
+
+  /* 横屏：左盘右读数 */
+  @media (orientation:landscape){
+    main{flex-direction:row}
+    .gauge-wrap{width:min(72vh,42vw,340px);height:min(72vh,42vw,340px)}
+    .readouts{max-width:min(46vw,480px)}
+  }
+  /* 竖屏：上盘下读数 */
+  @media (orientation:portrait){
+    main{flex-direction:column;gap:clamp(12px,2.4vh,22px)}
+    .gauge-wrap{width:min(46vh,74vw,320px);height:min(46vh,74vw,320px)}
+    .readouts{max-width:440px}
+  }
+  @media (max-height:400px){
+    .card .k{font-size:10px}
+    button{min-height:44px;padding:10px 14px;font-size:13px}
+    .hint{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">水平仪 <small>LEVEL · 免签名网页版</small></div>
+    <div class="status" id="status">待授权</div>
+  </header>
+
+  <main>
+    <div class="gauge-wrap">
+      <div class="gauge" id="gauge">
+        <div class="ring r1"></div>
+        <div class="ring r2"></div>
+        <div class="ring r3"></div>
+        <div class="cross"></div>
+        <div class="cross2"></div>
+        <div class="target"></div>
+        <div class="needle" id="needle"></div>
+        <div class="bubble" id="bubble"></div>
+        <div class="gauge-val"><b id="gv">--</b><span>DEG</span></div>
+      </div>
+    </div>
+
+    <div class="readouts">
+      <div class="card"><div class="k">横向 LATERAL</div><div class="v" id="vLat">--<em>°</em></div></div>
+      <div class="card"><div class="k">纵向 LONGITUDINAL</div><div class="v" id="vLon">--<em>°</em></div></div>
+      <div class="card total"><div class="k">合成倾角 TOTAL</div><div class="v" id="vTot">--<em>°</em></div></div>
+    </div>
+  </main>
+
+  <footer>
+    <button class="primary" id="btnCal">校准置零</button>
+    <button id="btnReset">重置</button>
+    <button class="ghost" id="btnFull">全屏</button>
+  </footer>
+  <div class="hint" id="hint">首次请点上方“启用传感器”并允许运动与方向权限</div>
+</div>
+
+<div id="gate">
+  <h1>启用设备水平传感器</h1>
+  <p>iOS 需要你在点击后手动授权「运动与方向」权限。<br>若浏览器不支持传感器，将自动切换重力加速度兜底模式。</p>
+  <button class="primary" id="btnAuth">启用传感器</button>
+  <div class="mono">建议横屏使用 · 加入主屏幕可全屏</div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  var $ = function(id){ return document.getElementById(id); };
+  var elBubble=$('bubble'), elNeedle=$('needle'), elGv=$('gv');
+  var elLat=$('vLat'), elLon=$('vLon'), elTot=$('vTot');
+  var elStatus=$('status'), elHint=$('hint'), gate=$('gate');
+
+  var state = {
+    running:false,
+    mode:'none',          // 'orientation' | 'motion' | 'none'
+    lat:0, lon:0, tot:0,
+    calLat:0, calLon:0,
+    hasCal:false,
+    wakeLock:null,
+    lastVibe:0,
+    inLevel:false,
+    smooth:{x:0,y:0}
+  };
+
+  var LEVEL_DEG = 0.5;      // 水平阈值
+  var WARN_DEG  = 3.0;      // 警示阈值
+  var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
+
+  /* -------------------- 姿态解算 -------------------- */
+  // 屏幕方向角（0/90/180/270），统一取正值
+  function screenAngle(){
+    if (screen && screen.orientation && typeof screen.orientation.angle === 'number'){
+      return ((screen.orientation.angle % 360) + 360) % 360;
+    }
+    if (typeof window.orientation === 'number'){
+      return ((window.orientation % 360) + 360) % 360;
+    }
+    return 0;
+  }
+
+  // 由 alpha/beta/gamma 求设备坐标系下的“重力朝下”单位向量
+  function gravityFromOrientation(alpha, beta, gamma){
+    var b = beta  * Math.PI/180;
+    var g = gamma * Math.PI/180;
+    return {
+      x:  Math.sin(g) * Math.cos(b),
+      y: -Math.sin(b),
+      z: -Math.cos(g) * Math.cos(b)
+    };
+  }
+
+  // 由 accelerationIncludingGravity 求“重力朝下”单位向量（自适应各平台符号）
+  function gravityFromMotion(ax, ay, az){
+    var m = Math.sqrt(ax*ax + ay*ay + az*az) || 1;
+    var gx = ax/m, gy = ay/m, gz = az/m;
+    if (gz > 0){ gx = -gx; gy = -gy; gz = -gz; }
+    return { x:gx, y:gy, z:gz };
+  }
+
+  // 把设备坐标向量投影到屏幕坐标 → 求横向/纵向倾角
+  function project(grav){
+    var a = screenAngle() * Math.PI/180;
+    var cs = Math.cos(a), sn = Math.sin(a);
+    var sx =  grav.x*cs + grav.y*sn;   // 屏幕向右
+    var sy = -grav.x*sn + grav.y*cs;   // 屏幕向上
+    var sz =  grav.z;                  // 屏幕向里（平放时为负）
+
+    var denom = Math.sqrt(sx*sx + sz*sz) || 1e-6;
+    var lat = Math.atan2(sx, -sz) * 180/Math.PI;            // 右侧低为正
+    var lon = Math.atan2(-sy, Math.sqrt(sx*sx + sz*sz)) * 180/Math.PI; // 顶部抬起为正
+    var tot = Math.acos(Math.max(-1, Math.min(1, -sz))) * 180/Math.PI;
+    if (!isFinite(lat)) lat = 0;
+    if (!isFinite(lon)) lon = 0;
+    if (!isFinite(tot)) tot = 0;
+    return { lat:lat, lon:lon, tot:tot };
+  }
+
+  /* -------------------- 渲染 -------------------- */
+  function fmt(v){
+    if (!isFinite(v)) return '--';
+    var a = Math.abs(v);
+    if (a < 10)  return v.toFixed(2);
+    if (a < 100) return v.toFixed(1);
+    return v.toFixed(0);
+  }
+
+  function setLevelClass(tot){
+    var cls = tot <= LEVEL_DEG ? 'ok' : (tot <= WARN_DEG ? 'warn' : 'bad');
+    if (tot <= LEVEL_DEG && !state.inLevel){
+      state.inLevel = true;
+      vibrate([12,60,12]);
+    } else if (tot > LEVEL_DEG * 1.6){
+      state.inLevel = false;
+    }
+    document.body.classList.remove('ok','warn','bad');
+    document.body.classList.add(cls);
+  }
+
+  function vibrate(p){ try{ if (navigator.vibrate) navigator.vibrate(p); }catch(e){} }
+
+  function render(){
+    var lat = state.lat, lon = state.lon, tot = state.tot;
+
+    elLat.innerHTML = fmt(lat) + '<em>°</em>';
+    elLon.innerHTML = fmt(lon) + '<em>°</em>';
+    elTot.innerHTML = fmt(tot) + '<em>°</em>';
+    elGv.textContent = fmt(lat) + ' / ' + fmt(lon);
+
+    // 气泡位置：角度 → 偏移量（±45° 映射到最大半径）
+    var rMax = (elBubble.parentElement ? elBubble.parentElement.clientWidth : 300) * MAX_OFFSET;
+    var nx = Math.max(-1, Math.min(1, lat / 45));
+    var ny = Math.max(-1, Math.min(1, -lon / 45));  // 顶部抬起 → 气泡向后（向下）
+    // 平滑
+    state.smooth.x += (nx - state.smooth.x) * 0.25;
+    state.smooth.y += (ny - state.smooth.y) * 0.25;
+
+    elBubble.style.transform = 'translate(-50%,-50%) translate(' +
+      (state.smooth.x * rMax).toFixed(1) + 'px,' + (state.smooth.y * rMax).toFixed(1) + 'px)';
+
+    // 指针显示横向倾角
+    var ang = Math.max(-45, Math.min(45, lat)) * 2;
+    elNeedle.style.transform = 'translateX(-1px) rotate(' + ang.toFixed(1) + 'deg)';
+
+    setLevelClass(tot);
+  }
+
+  function update(grav){
+    var p = project(grav);
+    state.lat = p.lat - (state.hasCal ? state.calLat : 0);
+    state.lon = p.lon - (state.hasCal ? state.calLon : 0);
+    var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
+    state.tot = t;
+    render();
+  }
+
+  /* -------------------- 事件 -------------------- */
+  var lastEvent = 0;
+  function onOrientation(e){
+    if (e.beta === null && e.gamma === null) return;
+    if (e.absolute === false && state.mode !== 'orientation') { /* 依旧可用 */ }
+    state.mode = 'orientation';
+    lastEvent = Date.now();
+    update(gravityFromOrientation(e.alpha || 0, e.beta || 0, e.gamma || 0));
+  }
+
+  function onMotion(e){
+    if (state.mode === 'orientation' && Date.now() - lastEvent < 1500) return;
+    var a = e.accelerationIncludingGravity;
+    if (!a || (a.x === null && a.y === null && a.z === null)) return;
+    state.mode = 'motion';
+    update(gravityFromMotion(a.x || 0, a.y || 0, a.z || 0));
+  }
+
+  var listening = false;
+  function start(){
+    if (listening) return;
+    listening = true;
+    state.running = true;
+    window.addEventListener('deviceorientation', onOrientation, true);
+    window.addEventListener('devicemotion', onMotion, true);
+    elStatus.className = 'status on';
+    elHint.textContent = '已启用：将手机屏幕朝上平放测量；可点「校准置零」以当前面为基准';
+    setTimeout(function(){
+      if (!state.running) return;
+      if (Date.now() - lastEvent > 2500 && state.mode === 'none'){
+        // 两个通道都没数据
+        elStatus.className = 'status err';
+        elStatus.textContent = '无传感器数据';
+        elHint.textContent = '未收到传感器数据：请确认用 HTTPS 打开，且已在系统设置中允许浏览器访问运动与方向';
+      } else {
+        elStatus.textContent = state.mode === 'motion' ? '重力模式' : '方向模式';
+      }
+    }, 2000);
+    requestWakeLock();
+  }
+
+  function requestWakeLock(){
+    try{
+      if ('wakeLock' in navigator && navigator.wakeLock &&
+          document.visibilityState === 'visible' && !state.wakeLock){
+        navigator.wakeLock.request('screen').then(function(lock){
+          state.wakeLock = lock;
+          lock.addEventListener('release', function(){ state.wakeLock = null; });
+        }).catch(function(){});
+      }
+    }catch(e){}
+  }
+
+  // iOS 13+ 权限申请
+  function authorize(){
+    var DOE = window.DeviceOrientationEvent;
+    var DME = window.DeviceMotionEvent;
+    var tasks = [];
+    if (DOE && typeof DOE.requestPermission === 'function'){
+      tasks.push(DOE.requestPermission().catch(function(){ return 'denied'; }));
+    }
+    if (DME && typeof DME.requestPermission === 'function'){
+      tasks.push(DME.requestPermission().catch(function(){ return 'denied'; }));
+    }
+    if (!tasks.length){
+      gate.classList.add('hide');
+      start();
+      return;
+    }
+    Promise.all(tasks).then(function(res){
+      var ok = res.some(function(r){ return r === 'granted'; });
+      if (ok){
+        gate.classList.add('hide');
+        start();
+      } else {
+        // 即便被拒也尝试启动，由数据到达与否决定状态
+        gate.classList.add('hide');
+        start();
+        elStatus.className = 'status err';
+        elStatus.textContent = '权限被拒';
+        elHint.textContent = '权限被拒绝：请在 Safari「网站设置 → 运动与方向」中允许后刷新页面';
+      }
+    });
+  }
+
+  $('btnAuth').addEventListener('click', authorize);
+
+  // 交互兜底：未授权时，任意点击也可尝试
+  document.addEventListener('click', function(){
+    if (gate.classList.contains('hide') && !listening){ start(); }
+  }, { once:true });
+
+  $('btnCal').addEventListener('click', function(){
+    var p = project(state.mode === 'motion' ? state._lastGrav || {x:0,y:0,z:-1} : state._lastGrav || {x:0,y:0,z:-1});
+    state.calLat = p.lat;
+    state.calLon = p.lon;
+    state.hasCal = true;
+    vibrate(20);
+    elHint.textContent = '已校准：当前姿态记为 0.00°，可点「重置」清除';
+  });
+
+  $('btnReset').addEventListener('click', function(){
+    state.hasCal = false;
+    state.calLat = 0;
+    state.calLon = 0;
+    vibrate(12);
+    elHint.textContent = '校准已重置，读数回到绝对倾角';
+  });
+
+  $('btnFull').addEventListener('click', function(){
+    var el = document.documentElement;
+    try{
+      if (!document.fullscreenElement && el.requestFullscreen){
+        el.requestFullscreen().catch(function(){});
+      } else if (document.webkitFullscreenElement === null && el.webkitRequestFullscreen){
+        el.webkitRequestFullscreen();
+      } else if (document.exitFullscreen){
+        document.exitFullscreen().catch(function(){});
+      }
+    }catch(e){}
+    elHint.textContent = 'iPhone 全屏：Safari 分享按钮 →「添加到主屏幕」，从桌面图标打开即为全屏';
+  });
+
+  // 记录最近一次重力向量，供校准使用
+  var _update = update;
+  update = function(grav){
+    state._lastGrav = grav;
+    _update(grav);
+  };
+
+  // 前后台切换
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState === 'visible'){
+      requestWakeLock();
+      if (listening){
+        window.removeEventListener('deviceorientation', onOrientation, true);
+        window.removeEventListener('devicemotion', onMotion, true);
+        window.addEventListener('deviceorientation', onOrientation, true);
+        window.addEventListener('devicemotion', onMotion, true);
+      }
+    } else {
+      if (state.wakeLock && state.wakeLock.release){
+        try{ state.wakeLock.release(); }catch(e){}
+        state.wakeLock = null;
+      }
+    }
+  });
+
+  // 首次渲染
+  render();
+  elLat.innerHTML = '--<em>°</em>';
+  elLon.innerHTML = '--<em>°</em>';
+  elTot.innerHTML = '--<em>°</em>';
+  elGv.textContent = '--';
+})();
+</script>
+</body>
+</html>
