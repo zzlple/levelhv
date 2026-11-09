@@ -291,14 +291,20 @@
     return 0;
   }
 
-  // 由 alpha/beta/gamma 求设备坐标系下的“重力朝下”单位向量
+  // 由 alpha/beta/gamma 求设备坐标系下的“重力朝下”单位向量（兜底通道）
+  // 必须把 alpha 一起算进去：竖立持握时 beta≈90°，横滚只体现在 alpha 上，
+  // 旧实现只吃 beta/gamma，竖立时 x 恒等于 sin(gamma)*cos(90°)=0，横向永远不动。
   function gravityFromOrientation(alpha, beta, gamma){
+    var a = alpha * Math.PI/180;
     var b = beta  * Math.PI/180;
     var g = gamma * Math.PI/180;
+    var sa = Math.sin(a), ca = Math.cos(a);
+    var sg = Math.sin(g), cg = Math.cos(g);
+    var sb = Math.sin(b), cb = Math.cos(b);
     return {
-      x:  Math.sin(g) * Math.cos(b),
-      y: -Math.sin(b),
-      z: -Math.cos(g) * Math.cos(b)
+      x: -(ca*sg + sa*sb*cg),
+      y: -sa*sg + ca*sb*cg,
+      z: -cb*cg
     };
   }
 
@@ -674,24 +680,51 @@
     var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
     state.tot = t;
     render();
+    paintSrc();
+  }
+
+  // 数据源指示：真机排障时能一眼看出走的是加速度计（重力模式）还是欧拉角（方向模式）
+  var lastSrcPaint = 0;
+  function paintSrc(){
+    var now = Date.now();
+    if (now - lastSrcPaint < 1000) return;
+    lastSrcPaint = now;
+    if (!state.running || state.mode === 'none') return;
+    var t = state.mode === 'motion' ? '重力模式' : '方向模式';
+    if (elStatus.textContent !== t){
+      elStatus.className = 'status on';
+      elStatus.textContent = t;
+    }
   }
 
   /* -------------------- 事件 -------------------- */
-  var lastEvent = 0;
+  // 通道优先级：devicemotion（加速度计，无欧拉角奇点）优先，deviceorientation 只做兜底。
+  // 原因：iOS 竖立持握时 beta≈90°，Z-X'-Y'' 欧拉角撞上万向锁，横滚几乎不体现在 gamma 上，
+  // 旧的"orientation 优先"会让整个竖立姿态的横向读数钉死在 0（真机 iPhone 12 实测无误）。
+  var lastEvent = 0;      // 任意通道最后有效数据时刻
+  var lastMotion = 0;     // motion 通道最后有效数据时刻
+  var MOTION_HOLD = 2500; // motion 静默多久才允许 orientation 接管（真机 60Hz，正常永不回落）
+
   function onOrientation(e){
     if (e.beta === null && e.gamma === null) return;
-    if (e.absolute === false && state.mode !== 'orientation') { /* 依旧可用 */ }
+    if (Date.now() - lastMotion < MOTION_HOLD) return;   // 加速度计有数据 → 让位
     state.mode = 'orientation';
     lastEvent = Date.now();
     update(gravityFromOrientation(e.alpha || 0, e.beta || 0, e.gamma || 0));
   }
 
   function onMotion(e){
-    if (state.mode === 'orientation' && Date.now() - lastEvent < 1500) return;
     var a = e.accelerationIncludingGravity;
     if (!a || (a.x === null && a.y === null && a.z === null)) return;
+    var ax = a.x || 0, ay = a.y || 0, az = a.z || 0;
+    // 幅值健全性：单位可能是 g(≈1) 或 m/s²(≈9.8)，但绝不该接近 0。
+    // 若某些机型只发空壳数据，不能让它们刷新 lastMotion 把 orientation 兜底通道也堵死。
+    var mag = Math.sqrt(ax*ax + ay*ay + az*az);
+    if (!(mag > 0.35)) return;
     state.mode = 'motion';
-    update(gravityFromMotion(a.x || 0, a.y || 0, a.z || 0));
+    lastMotion = Date.now();
+    lastEvent = lastMotion;
+    update(gravityFromMotion(ax, ay, az));
   }
 
   var listening = false;
