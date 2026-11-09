@@ -128,7 +128,7 @@
     0%,100%{box-shadow:inset 0 0 26px rgba(140,0,0,.5),0 0 0 4px rgba(255,59,59,.14)}
     50%    {box-shadow:inset 0 0 56px rgba(190,0,0,.9),0 0 0 11px rgba(255,59,59,.36)}
   }
-  body.alarm .gauge{animation:alarmPulse .55s ease-in-out infinite}
+  body.alarm .gauge{animation:alarmPulse var(--blink,.4s) ease-in-out infinite}
 
   /* 小球闪烁：仅超限（离开安全范围）时闪，安全范围内常亮
      注意：气泡位置由 inline transform 控制，keyframes 里绝不能改 transform，否则会跳回盘心 */
@@ -138,7 +138,20 @@
     43%, 100%{opacity:.14;
          box-shadow:0 0 5px rgba(255,59,59,.2)}
   }
-  body.alarm .bubble{animation:bubbleBlink .5s steps(1,end) infinite;will-change:opacity}
+  body.alarm .bubble{animation:bubbleBlink var(--blink,.5s) steps(1,end) infinite;will-change:opacity}
+
+  /* 雷达预警档（到限位线 70%~95%）：黄色小球按比例加速闪烁 */
+  body.radar .bubble{background:radial-gradient(circle at 38% 32%,#fff8e0 0%,#ffb020 45%,#b86e00 100%);
+    animation:bubbleBlinkWarn var(--blink,.5s) steps(1,end) infinite;will-change:opacity}
+  @keyframes bubbleBlinkWarn{
+    0%, 45%  {opacity:1;
+         box-shadow:0 0 24px rgba(255,186,40,.9),0 0 62px rgba(255,150,0,.45),inset 0 0 10px rgba(255,255,255,.4)}
+    46%, 100%{opacity:.15;
+         box-shadow:0 0 6px rgba(255,170,0,.22)}
+  }
+  body.radar .gauge{border-color:#ffb020;box-shadow:inset 0 0 30px rgba(120,70,0,.45),0 0 0 5px rgba(255,176,32,.14)}
+  body.radar .brand,body.radar .card .v{color:#ffc44d}
+  .status.notice{color:#ffc44d;border-color:rgba(255,176,32,.4);background:rgba(255,176,32,.1)}
 
   /* 限位标签行 */
   .lim-tags{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
@@ -218,12 +231,12 @@
     <button class="ghost" id="btnFlip">↕ 车头↑</button>
     <button class="ghost" id="btnFull">全屏</button>
   </footer>
-  <div class="hint" id="hint">启用后自动校准置零（当前姿态记为 0.00°），默认上坡模式；荣放 20 款后保守限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留出前杠与排气管余量），超限「嘀嘀嘀」报警</div>
+  <div class="hint" id="hint">点「启用」后自动校准置零，不用再点校准；默认上坡模式。限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留前杠与排气管余量）：安全区小球常亮不闪，到限位线 70% 起闪烁 +「嘀嘀嘀」雷达递进，95% 起持续长鸣</div>
 </div>
 
 <div id="gate">
   <h1>启用设备水平传感器</h1>
-  <p>iOS 需要你在点击后手动授权「运动与方向」权限。<br>若浏览器不支持传感器，将自动切换重力加速度兜底模式。</p>
+  <p>iOS 需要点一次授权「运动与方向」。<br>点完即自动校准置零、自动进入上坡模式，无需再点「校准置零」。<br>若浏览器不支持传感器，将自动切换重力加速度兜底模式。</p>
   <button class="primary" id="btnAuth">启用传感器</button>
   <div class="mono">建议横屏使用 · 加入主屏幕可全屏</div>
 </div>
@@ -250,6 +263,7 @@
     wakeLock:null,
     lastVibe:0,
     inLevel:false,
+    calPending:false,
     smooth:{x:0,y:0}
   };
 
@@ -324,12 +338,13 @@
     return v.toFixed(0);
   }
 
-  function setLevelClass(tot){
-    var cls = tot <= LEVEL_DEG ? 'ok' : (tot <= WARN_DEG ? 'warn' : 'bad');
-    if (tot <= LEVEL_DEG && !state.inLevel){
+  // 颜色跟着「到限位线的比例」走，而不是合成倾角：安全绿 / 预警黄 / 超限红
+  function setLevelClass(r){
+    var cls = r < SAFE_R ? 'ok' : (r < LONG_R ? 'warn' : 'bad');
+    if (r < 0.06 && !state.inLevel){
       state.inLevel = true;
       vibrate([12,60,12]);
-    } else if (tot > LEVEL_DEG * 1.6){
+    } else if (r > 0.12){
       state.inLevel = false;
     }
     document.body.classList.remove('ok','warn','bad');
@@ -339,25 +354,30 @@
   function vibrate(p){ try{ if (navigator.vibrate) navigator.vibrate(p); }catch(e){} }
 
   /* -------------------- 音效引擎（嘀嘀嘀） -------------------- */
-  var audio = { ctx:null, muted:false };
-  // iOS 的 WebAudio 会被硬件静音开关静音，故同时准备 <audio> 元素走媒体通道（静音键下仍可发声）
+  /* -------------------- 音效引擎（雷达递进 + 长鸣） --------------------
+     iOS 上 WebAudio 会被侧边物理静音键整段静音，而 <audio> 元素走媒体通道通常仍能出声。
+     这里做双通道并行：<audio> 元素 + WebAudio 同时发声，任一路通就能听见。
+     解锁必须在用户手势的同步调用栈内完成，否则 iOS 会拒绝 play()（这是之前完全没声音的主因）。 */
+  var audio = { ctx:null, muted:false, elPlayed:false, lastErr:'' };
   var SFX = {
-    alarm: 'data:audio/wav;base64,UklGRl4RAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YToRAAAAAGABwQIiBIMF5AZFCKYJBwuY8zfy1vB17xTus+xT6/LpkejQGDEakhvzHFQetR8WIXci2CPH2mbZBdil1kTV49OC0iHRwM+hMQIzYzTENSU3hjjnOUg7qTz3wZbANb/UvXO8EruxuVC4EUlyStNLNE2VTvZPV1G3UhhUh6omqcWnZKYDpaKjQaLgoH+f4mFDY6RkBWZlZ8ZoJ2qIa+lstpFVkPSOk40yjNGKcIkPiK6GmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHmuhpqHhYhwiVyKR4syjB2NCY4McSFwNW9Kbl9tdGyIa51qsmk6lyWYEJn7meea0pu9nKmdlJ6BYJVfql6/XdRc6Fv9WhJa2qbFp7Com6mHqnKrXaxJrTSu4VD2TwpPH040TUhMXUtySodJZbdQuDu5J7oSu/276LzUvb++VkBqP38+lD2pPL070jrnOfs48MfbyMbJssqdy4jMdM1fzkrPyi/fLvQtCS0dLDIrRypbKZDXe9hm2VLaPdso3BTd/93q3isgPx9UHmkdfRySG6cavBnQGBvoBuny6d3qyOuz7J/tiu51758PtA7JDd4M8gsHCxwKMAlFCKb4kfl9+mj7U/w//Sr+Ff8=',
-    warn:  'data:audio/wav;base64,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'
+    tick: 'data:audio/wav;base64,UklGRs8CAABXQVZFZm10IBAAAAABAAEAESsAABErAAABAAgAZGF0YasCAACAg4eGhYB4cmZddJ+toJaIcWFNNVWq1r+nlHNcSSs+ltTHq5p8YU8yMX3Mz7GfhWZVOSplvtS3o41sWUIpT6vWv6eUdF1JLD2U08ism31hUDIxe8vPsZ+FZ1U6KmO81bikjm1ZQylNqdbAqJV1XUosPJHTyaybfmJQMzB5ytCyoIZnVTsqYbvVuaSOblpDKUun1sGolnZeSy06j9LJrZx+YlE0L3bI0bKgh2hWPCleudW6pI9uWkQpSaXWwqiWdl5LLTmN0cqtnH9jUTQudMfRs6GIaFY9KVy31rqlkG9aRSlIo9bCqZd3XkwuOIvRy66cgGNSNS5yxtK0oYlpVz0pWrbWu6WRcFtFKkah1sOpl3hfTS43idDLrp2BY1I2LXDF0rShiWlXPilYtNa8pZFxW0YqRJ7VxKqYeV9NLzWGz8yvnYFkUzYsbsPTtaKKalc/KVay1rymknFbRypDnNXFqph6YE4wNITOza+egmRTNyxrwtO2ootrWEApVLDWvaaTclxIK0Ga1caqmXpgTjAzgs7NsJ6DZVQ4K2nB1LajjGtYQClTrta+ppNzXEgrQJjUxquae2BPMTJ/zc6wn4RlVDkrZ7/Ut6OMbFlBKVGs1r+nlHNcSSs+ltTHq5p8YU8yMX3Mz7GfhWZVOSplvtS3o41sWUIpT6vWv6eUdF1JLD2U08ism31hUDIxe8vPsZ+FZ1U7LGS60bWijW5cRzBSpc25o5J2YlI5Ro/FvKSWfmhaQ0F6uLylmIRuYU5Caqm7p5iKdGZYSF6YtqiYjXprYE9YiK6pmI9/cGdYVnukp5iPg3RsYVlxmKSYj4Z5cWhfa42fl46HfHRvZWqEmJWMh394dG1rfZCSi4eBe3dzcHmJjYmFgn17eHV5g4iGg4F/fXx7fICCgYCAgA==',
+    long: 'data:audio/wav;base64,UklGRl4RAABXQVZFZm10IBAAAAABAAEAESsAABErAAABAAgAZGF0YToRAACAgYOCgoB9enVtdYyYkYqGfHVtXVyCqKeWj4JyaVZDZqrBqZmNdWZUM0CV1MSlmH9mWTgqcMjSrpyJbV9GJ0+w2LqgknZjUS04kdXGpZh/Z1k3K3PK0Kych2xdQidYude1n49yYUwpQ6PYvqKUeGNTLzWN1cemmH9mWDYsec7OqpuEaVw9KGbE06+diW1eQydXuda0no1wYEkoS67YuaCRc2FNKkKj2L2hk3ZjUCw8mtfBo5V5ZFMuN5LWxKSWe2RUMDSM1call3xlVjIyiNTHppd9ZVYzMIbTyKaYfmZXMzCF08immH5mVjMwhtPIpph9ZVYyMYjUx6WXfGVVMTOM1cWklntkVC81kdbDpJV5ZFMuOZfXwaOUeGNRLD2e2L6hk3ViTipDpti7oJFzYUsoSq7Yt5+OcWBIJ1K217SejG5fRCdbvtWwnYlsXUAnZsXSrZuFaVs7KXHMzqqagmdZNy190cqnmH5mVjIyitXFpJZ7ZFMuOJbXwaKUd2NQK0Ci2LyhkXNhTChJrdi3n45wYEcnU7fWs56LbV5DJ17A1K+ciGtcPihpx9Gsm4RpWzoqdM3NqZqBZ1k2LX/RyqeYfmZWMjGJ1Mall3tkVC82ktbDo5V5Y1ItOpnXwKKUd2NQKz6g2L2hknViTipCpdi7oZF0YU0pRajYuqCQc2FMKUer2LmgkHJhSyhIrNi5oJByYUsoSKvYuaCQc2FMKUap2LqgkXRhTSlDpdi8oZJ1Yk8rP5/Yv6KUd2NRLTqX18KjlXpkVDA0jNXGpZd+Zlc0Ln/Qy6iZgmhaOipvydGsnIdrXUAnXr7Vsp6Mb2BIKEyt2LqgknViUCw7mNfDpJZ8ZVc0Ln3PzaqbhWpcPydgvtWzno1wYEspRKPYv6KVemRVMjCA0M2qm4VqXUAnWrnXtp+QdGJPLDmT1cammIFoWjsoZcHVs56OcmFNKzyX1sWmmIBoWzwoYr7WtJ+QdGJQLTaL08qpmoVrXUMnUK/YvKKVemVXNitwx9Oxno5yYU8sN43TyqmbhmxeRidIpdjCpJeAaFs+J1m12LqhlHplWDcpaMDWtaCRd2RVMyxzx9Syno90Y1MxL3nK0rCejnNiUjAwesvSsJ6PdGJTMS53ydOyn5B1Y1QzLG/E1bWgknhlVzgpYrrXuqKVfWdbPidSrNjBpZmDal5HKECW1cqqnIpwYVAuMXrJ07OfknhlWDkoW7PYv6SYgmpeRyk9kNLOrZ2Oc2NUNCpmu9i8o5eAaV1GKD+S0s6tnY50Y1Y3KV602MClmYVsX0wsNH/K1LSglHtnW0EnRpvVy6ydjnRjVjgoWa/Yw6eaiG9hUTEsa73YvaSYhGxfTC0yeMXWuKKWgGpeSSo2gMrUtqGVf2ldRyo4hMzUtaGVfmhdRyo4g8vUtaGVf2leSSs1fsjVuKKXgWtfTC0xdMLXvKSYhW1gUDEsZrjYwaabiXFiVDcoVqnXyKudjnZlWT4nRZXS0LGflH1oXUgqNXzG1rqjmIVtYVEyKmCy2MWpnI11ZFg+J0WV0dGyoJR+aV5KLDFyv9i/pZqJcWJVOCdQodXNrp+Se2ddRyo1esTXvKSZh29iVDcoUqTWzK6ekntnXUcqNHnD172lmohwYlU4J06f1M6wn5N9aF5KLDFxvtjAppuLcmNXPCdGldHRs6CVgGpfTS8sZbXYxamcjnZlWkEoPYjM1LiimIRtYVI0KVmq18qsnpF6Z1xGKjZ7xde8pJqIcGJVOCdOn9TOsJ+TfWheSiwwcb7YwKabinJjVzwnSJfS0LKglX9qX0wuLmu62MKnm4tzZFg8J0aW0tGyoJV/aV5LLS9uvNjAppuKcmNWOidMndTOr5+TfGhdRyo1e8XWu6OZhW5hUjMpXa/YxqmcjXVkWT4nRpbS0LGfk3xoXUcqNn/I1biil4NsYE4vLmy82L+lmohvYVM0KV2x2MWom4tyY1Y4KFSo18iqnI10ZFc6J1Ck1smrnY51ZFc7J1Ck18mqnY10Y1Y5J1Sq18apnItyYlQ1KV+02MGmmoduYVAwLnDB17qil4FqXkgqOYjO0bGfknllWT0nTqXXx6ibiXBhUTAuccPWuKGVfmhcQidGndbJqpyKcGFRMC50xdW1oJN6Zlk9J1St2MKlmYRrXkgpPpTUy6ucinBhTy4yf8zRsJ6PdGNTMi1yxtS0n5F3ZFY1K2zC1rWgkndkVjUrbcPVtJ+RdmNUMy11ydOxno5zYlAuNIXQzquciW5fSSlBnNfEppiBaFs+J1q417igkndjVDEwgM/Oq5uIbF5FJ02t2LyilHlkVTIwgNDNqpuFal1BJ1q517Wfj3JhTSpAntjAo5V6ZFUxMYbSyaeZgWdZOCtzy8+rm4VqXD0oaMbSrZyHa10/KGXE066ch2tdPihnxtKtm4VpWzspcczOqZqBZ1g1LoPTx6WXe2RTLjqb2L6hkXNhSihQttaynYlrXDwpc87Lp5h9ZVMtPKDYuqCOb19DJ2bIz6mZf2VVLjuf2LmfjW5ePyhxzsqmlnljTylLtdawnIVoWDM0lti7oI5uXj4pedLGo5R0YUcnYsfOqJd6Y04oUbzTrJp/ZVIrR7PWr5uCZlQtQq7XsJyDZlUtQKzXsJyDZlUtQ7DWr5uBZVMrSbfUrJl9ZE8oVcHQqJd4YkknZszJpJNyX0EpftXAoI1sWzYzmti1nYVnVSxIuNOqmHpiSSdpz8aikW9dOi+T2LadhWdUK0u80aiXd2FEKHvVv5+LalkwP6/VrJl6YkgnctPBoIxrWTE9rtWsmHpiRyd31b+fimlXLka50qiWdWBAK4rYt52EZVEoW8nJo5BuWzQ4qdasmXlhRSiA17qehWZSKVnJyaOQbVszPK/Uqpd2YEAsjti0nIBkTCdu08CfiWhVK1HFy6ORblszPLDUqZZ1Xz0umNiwmnxiRiiA17idg2VOJ2nRwaCJaFUqVcfJoo9sWS9EutCmk3BdNjir1aqXdV88L5vYr5l6YUMqi9i0m35jSSd717mdg2VOJ23Tv5+HZ1IoX87EoItpVitTx8mij2tZLki+zqSSblsyPrXSp5RxXTc3qtWql3VfPDCe166ZeGBBLJHYspp8YkYohNi2nIBkSyd11buehWVQJ2fRwZ+JaFQpWcrHoY1qWC1Lwc2kkW5bMj+00qeVcl45NKTWrJh3YEAsktiym31iSCh817mdhGVPJ2bQwqCKaVYrUMTMpJFuWzM8sdSplnVfPS6X2LGbfWNIJ3jVvJ6GZ1MpWMnJo5BtWzI9sNSql3ZgQCuN2LWcgmROJ2TOxaGOa1kwP7PUqZd2YEIqh9i4nYVmUilWxsukknBdOTGb2LKbgGROJ2PNx6KQblw2NaHYsJt/ZE4nYcvIo5FvXTkwlti1nIRmUypQwNCnlnZgRCh51MCgjWxbNDag2LKcgmZTKk280qmYeWJJJ2bNyaSTcl9AKX3VwaGOblw5Lo7Yu5+La1o1M5jYt56JaVkzNp3Ytp6IaVkzNZvYt56Jalo2MZLYu5+NbVw7LIPVwqKRcV9DJ23NyqaWeGJNKFK71K2bgmdWMDic2LqfjW5eQChwzcunl3tkUStCqdi2nottXT8ob8zNqJh+ZVUvOJjYvqGSc2FKKE+017Oei21eQSdjxNKtm4ZqWzspcMvPqpqDaFo5KnPMzqqahGlbOyltyNGtnIdrXUEnXLzWs56NcGBKKEal2L6ilHlkVTIwgNDNqpuGa15DJ1Gw2LuhlHlkVjQtdsrSr52McGFNKzqQ1Mqpm4ZsX0coQ53XxqeahGteRihEntfGp5qGbF9JKT2S08yrnItwYVAvMHjI1LSgk3llWTwnU6vYxKaah25gTi4xeMfVtqGVfmhcRCg+j9HQsJ+SeWZaQCdFl9POr56ReWZbQidAj9DRs6CUfmleSSszeMPXvKSZh29iVDYoU6XWzK6fknxoXUksMG+72MOonI52ZVtEKTZ6wtjAp5uNdmVbRCo0dL3YxKmdkHpoXksvK12q1s6xoJaEbmJWPCc9gsTYwqidkXtpX080KEuUzdW8ppyPeWheTjMoS5LM1r6nnZF8amBSOSc+f8DYx62gloVwZFpGLCxaoNHUvKackX1rYVY+KDNordXSuKWckHxqYVU+KTFkqNPUvKedk4BuY1lGLSpPkcjYxq6gmIp2Z19SOig0Z6jS1b6pnpWFcmVdTzcnOG2s09S+qZ6WhnNmXlE6KDJhoM7XxK6hmYx6amFYRC4pR4K719C5p56VhXNmX1M9KS1UkMTYzbalnZODcmZeUj0pLVOOwtjOuKadlYZ1Z2BWQi0pRXy11dTAq6CZjXxsY1tNNicyXJfH2M23pp6WiHZpYVhHMSc6aqTN2MmzpJ2UhXRoYFdFMCc7a6XN2Mm0pZ2VhnVoYVhIMic2Y5zJ2M24p56XinlrY1tNOCgvU4u+19O/rKGaj39wZV5TQCwoQXOr0NfIs6SdlYd2aWJaSjUnMViQwdfSvaugmo9/b2VeU0AsKEFyqc/YybSlnZWId2piWks2JzBWjb/X0r6roZqPgHBlXlRBLShAcqrP18mzpZ2Vh3ZpYVlJNCczXJXE2NC7qZ+YjHxtY1xPOiksToa61tTArKGaj39vZV5SPioqSX+21dXBraGakH9vZV5RPSorTYW61tO+q6CZjXxsY1tNNycyXJfH2M22pp2VhnRnYFZCLSlFfLXV1L+roJiLempiWUgxJz1xrdPVwaygmYx6a2JZRzAnQHi01dO9qZ+XiHVnYFQ/KixUksbYyrKjm5B9bGJaSDAoRIC718+3pZySgG5jW0kwKESBvdjNtaSbj3xrYldDKyxVmMzXw6yfl4dzZV1NNCdBgL7Yy7GimYt2Z15QNic/fb3YyrChmIl0Zl1LMShLkMrXwamek4BsYlY+KDVxttjMsKGXhnFkWkQqMGav1s6yoZiGcWNZQik0cbnYyK2flIBrYFI3J0iSztW6pJqKc2RaQig3esHYwaecjndmW0UqNHfA2MCnm4x0ZFlAJz6Iy9W4opiFbWFSMylbrdfIqp2PdmVZPydEldLQsJ+Te2dcQyg+jtDRsZ+SemZbQSdGmtTMrJ2OdGNVNilftti/pJiDal5IKT2Q082snYxyYlEwL3jJ07KfkHZjVTQscMXUs5+QdWNTMS95y9GvnYxwYU0rO5TVx6eZgmlcPyddu9e1n5BzYk8rPJjXw6SXfWVXNC5+0MypmoJoWjkqcsvPqpqEaFo5KnXOzamZgGdYNDCH1MWklnljUCtBp9i4n41uXkInaMnOqZl+ZVQtPaTYt56LbFw7K37TxaOTdGBHJ2PJzaeXeWNNKFbA0aqYfGNPKFO/0amYe2NNJ1rFzqeWd2FHJ27QxqKRcF47LY3YuZ6HaFYtRLXUqph5YkcndNPBoIxqWTA/sdSqmHhhQymC17mehWZSKFrKyKKPbFoxQLXSqJVzXjoyotetmHhgQCyU2LCae2FDKo7YsZp7YUMrkdiwmXlgPy6c16yXdV45Nq3Tp5NvWzBHwsqijGlUKGXTvZ2CY0cpj9iumHReNT67zaONaFMnbta3m3thPTOs0qWQalUoaNW4m3tgPDayz6ONaFEne9ixmHRdMkrIw5+DY0QupdOlj2lSJ3zYr5dxWy1Y0buce2A4PsDHn4RjQzCs0KOLZkspl9ankGlRJ4XYqpRsVSd32K6Wb1gpbtewl3BZKmnXsphxWipo17KYcVkqatewl3BYKXDYrpZuVid62KuTa1Mnh9eokGlPKJfUpIxmSSyqz6GGY0E2vMeef2A3Rsu9m3ddLl3VspdvVyh72KqRaU8onNOjiWVGObS/mn5mRFi7qZJ3Z0l2tJmKdGhWi6SOg3VraJKSh395cXmLhoJ+fn4='
   };
-  var snd = { alarm:null, warn:null, alarmOk:undefined, warnOk:undefined };
+  var snd = { tick:null, long:null };
+  var webLong = { osc:null, gain:null, lfo:null, running:false };
 
   function makeSnd(){
-    if (snd.alarm) return;
+    if (snd.tick) return;
     try{
-      snd.alarm = new Audio(SFX.alarm);
-      snd.alarm.preload = 'auto'; snd.alarm.setAttribute('playsinline',''); snd.alarm.volume = 1.0;
-      snd.warn  = new Audio(SFX.warn);
-      snd.warn.preload  = 'auto'; snd.warn.setAttribute('playsinline','');  snd.warn.volume = 0.85;
-      // iOS 部分版本要求媒体元素挂载到文档中才允许播放：用 1px 透明层挂载，而非 display:none
-      [snd.alarm, snd.warn].forEach(function(a){
+      snd.tick = new Audio(SFX.tick);
+      snd.tick.preload = 'auto'; snd.tick.setAttribute('playsinline',''); snd.tick.volume = 0.55;
+      snd.long = new Audio(SFX.long);
+      snd.long.preload = 'auto'; snd.long.setAttribute('playsinline','');
+      snd.long.loop = true; snd.long.volume = 0.45;
+      // iOS 要求媒体元素挂载在文档中才允许播放：用 1px 透明层挂载（不能 display:none）
+      [snd.tick, snd.long].forEach(function(a){
         try{
-          a.style.cssText = 'position:fixed;left:-4px;bottom:-4px;width:1px;height:1px;opacity:0.01;pointer-events:none';
+          a.style.cssText = 'position:fixed;left:-6px;bottom:-6px;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1';
           (document.body || document.documentElement).appendChild(a);
           a.load();
         }catch(e){}
@@ -375,108 +395,164 @@
     return audio.ctx;
   }
 
-  // 用 <audio> 播短音（iOS 静音键下依然出声）；每次重新起播，失败不记忆、下次仍重试
-  function playSnd(kind){
-    if (audio.muted) return false;
+  // loud=true 时真播一声「嘀」用于自检；否则静默解锁（不吵人）
+  var lastSilentUnlock = 0;
+  function unlockAudio(loud){
+    var nowts = Date.now();
+    if (!loud && nowts - lastSilentUnlock < 3000) return;   // 静默解锁节流，避免每次点屏都试播
+    if (loud || !lastSilentUnlock) lastSilentUnlock = nowts;
     makeSnd();
-    var a = snd[kind];
-    if (!a) return false;
-    try{ a.volume = (kind === 'alarm') ? 1.0 : 0.85; }catch(e){}
-    try{
-      try{ a.pause(); }catch(e){}
-      try{ a.currentTime = 0; }catch(e){}
-      var p = a.play();
-      if (p && p.then){
-        p.then(function(){ snd[kind + 'Ok'] = true; })
-         .catch(function(){ snd[kind + 'Ok'] = false; });
-      } else { snd[kind + 'Ok'] = true; }
-      return true;
-    }catch(e){ snd[kind + 'Ok'] = false; return false; }
-  }
-
-  // iOS 需在用户手势里解锁音频：resume AudioContext + 把音效元素各播一次再暂停
-  function unlockAudio(){
-    var ac = audioCtx();
-    if (ac){
-      if (ac.state === 'suspended'){ ac.resume().catch(function(){}); }
-      try{
-        var o = ac.createOscillator(), g = ac.createGain();
-        g.gain.value = 0.0001;
-        o.connect(g); g.connect(ac.destination);
-        o.start(); o.stop(ac.currentTime + 0.02);
-      }catch(e){}
-    }
-    makeSnd();
-    // 静音试播一次即完成 iOS 的媒体解锁，不给用户造成额外噪声
-    Object.keys(snd).forEach(function(k){
-      if (k.indexOf('Ok') >= 0) return;
-      var a = snd[k];
-      if (!a || typeof a.play !== 'function') return;
-      var baseVol = (k === 'alarm') ? 1.0 : 0.85;
-      try{
-        try{ a.volume = 0; }catch(e){}
-        try{ a.currentTime = 0; }catch(e){}
-        var p = a.play();
-        if (p && p.then){
-          p.then(function(){
-            snd[k + 'Ok'] = true;
-            setTimeout(function(){ try{ a.pause(); a.currentTime = 0; }catch(e){} try{ a.volume = baseVol; }catch(e){} }, 40);
-          }).catch(function(){ snd[k + 'Ok'] = false; try{ a.volume = baseVol; }catch(e){} });
-        }
-      }catch(e){ snd[k + 'Ok'] = false; try{ a.volume = baseVol; }catch(e){} }
-    });
-  }
-
-  // 回到前台后恢复音频上下文
-  document.addEventListener('visibilitychange', function(){
-    if (document.hidden) return;
     var ac = audioCtx();
     if (ac && ac.state !== 'running'){ try{ ac.resume().catch(function(){}); }catch(e){} }
-  });
-
-  // 首次任意触摸/点击即解锁音频（iOS 授权要求手势上下文）
-  document.addEventListener('touchstart', function(){ unlockAudio(); }, { passive:true, once:true });
-  document.addEventListener('click', function(){ unlockAudio(); }, { once:true });
-
-  function beep(freq, dur, vol){
-    if (audio.muted) return;
-    var kind = freq >= 1100 ? 'alarm' : 'warn';
-    // 主通道：<audio> 元素（iOS 静音键下也能响）
-    if (playSnd(kind)) {
-      // 起播若被拒（iOS 尚未解锁等），立即用 WebAudio 补一声，不等下一拍
-      var a = snd[kind];
-      if (a && snd[kind + 'Ok'] === false) webBeep(freq, dur, vol);
-      return;
-    }
-    // 备份通道：WebAudio（桌面浏览器 / <audio> 不可用时）
-    webBeep(freq, dur, vol);
+    ['tick','long'].forEach(function(k){
+      var a = snd[k];
+      if (!a) return;
+      if (k === 'long' && !a.paused) return;               // 正在长鸣时不要打断
+      if (k === 'long' && webLong.running) return;
+      try{
+        try{ a.pause(); }catch(e){}
+        try{ a.currentTime = 0; }catch(e){}
+        a.volume = (k === 'tick' && loud) ? 0.6 : 0.0008;
+        var pr = a.play();
+        if (pr && pr.then){
+          pr.then(function(){
+            if (k === 'tick') audio.elPlayed = true;
+            setTimeout(function(){
+              try{ a.pause(); a.currentTime = 0; }catch(e){}
+            }, (k === 'tick' && loud) ? 90 : 40);
+          }).catch(function(err){
+            audio.lastErr = (err && err.name) ? err.name : 'blocked';
+          });
+        } else { audio.elPlayed = true; }
+      }catch(e){ audio.lastErr = 'exception'; }
+    });
   }
 
   function webBeep(freq, dur, vol){
     var ac = audioCtx();
     if (!ac) return;
-    if (ac.state === 'suspended'){ try{ ac.resume().catch(function(){}); }catch(e){} }
-    var t = ac.currentTime;
-    var o = ac.createOscillator(), g = ac.createGain();
-    o.type = 'square';
-    o.frequency.setValueAtTime(freq, t);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(ac.destination);
-    o.start(t); o.stop(t + dur + 0.03);
+    if (ac.state !== 'running'){ try{ ac.resume().catch(function(){}); }catch(e){} }
+    try{
+      var t = ac.currentTime;
+      var o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'square';
+      o.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.001, vol), t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(ac.destination);
+      o.start(t); o.stop(t + dur + 0.03);
+    }catch(e){}
   }
+
+  function webLongOn(vol){
+    var ac = audioCtx();
+    if (!ac) return;
+    if (ac.state !== 'running'){ try{ ac.resume().catch(function(){}); }catch(e){} }
+    if (webLong.running){
+      try{ webLong.gain.gain.setTargetAtTime(Math.max(0.02, Math.min(0.45, vol)), ac.currentTime, 0.05); }catch(e){}
+      return;
+    }
+    try{
+      var o = ac.createOscillator(), g = ac.createGain();
+      var lfo = ac.createOscillator(), lg = ac.createGain();
+      o.type = 'sawtooth'; o.frequency.value = 1050;
+      lfo.frequency.value = 5; lg.gain.value = 38;      // 颤音深度：风鸣感
+      lfo.connect(lg); lg.connect(o.frequency);
+      g.gain.value = 0.0001;
+      g.gain.setTargetAtTime(Math.max(0.02, Math.min(0.45, vol)), ac.currentTime, 0.03);
+      o.connect(g); g.connect(ac.destination);
+      o.start(); lfo.start();
+      webLong.osc = o; webLong.gain = g; webLong.lfo = lfo; webLong.running = true;
+    }catch(e){}
+  }
+
+  function webLongOff(){
+    var ac = audio.ctx;
+    if (!ac || !webLong.running) return;
+    try{ webLong.gain.gain.setTargetAtTime(0.0001, ac.currentTime, 0.02); }catch(e){}
+    var o = webLong.osc, l = webLong.lfo;
+    setTimeout(function(){ try{ o.stop(); }catch(e){} try{ l.stop(); }catch(e){} }, 140);
+    webLong.osc = webLong.gain = webLong.lfo = null; webLong.running = false;
+  }
+
+  // 单声「嘀」：rate 控制音高（雷达递进），vol 控制响度
+  function playTick(rate, vol){
+    if (audio.muted) return;
+    makeSnd();
+    var r = Math.max(0.6, Math.min(2.0, rate || 1));
+    var v = Math.max(0.05, Math.min(1, vol || 0.4));
+    var a = snd.tick;
+    if (a){
+      try{
+        try{ if ('preservesPitch' in a) a.preservesPitch = false; }catch(e){}
+        try{ if ('webkitPreservesPitch' in a) a.webkitPreservesPitch = false; }catch(e){}
+        a.playbackRate = r;
+        a.volume = v;
+        try{ a.pause(); }catch(e){}
+        try{ a.currentTime = 0; }catch(e){}
+        var pr = a.play();
+        if (pr && pr.then) pr.then(function(){ audio.elPlayed = true; }).catch(function(){ audio.lastErr = 'tick-blocked'; });
+      }catch(e){ audio.lastErr = 'tick-exception'; }
+    }
+    // 并行一路 WebAudio 垫底：万一媒体元素被系统静音/被拒，这一路仍能出声
+    webBeep(1075 * r, 0.07, v * 0.4);
+  }
+
+  function longOn(vol){
+    if (audio.muted) return;
+    makeSnd();
+    var v = Math.max(0.1, Math.min(1, vol || 0.5));
+    var a = snd.long;
+    if (a){
+      try{
+        a.volume = v;
+        if (a.paused){ a.loop = true; var pr = a.play(); if (pr && pr.then) pr.catch(function(){}); }
+      }catch(e){}
+    }
+    webLongOn(v * 0.5);
+  }
+
+  function longOff(){
+    try{ if (snd.long && !snd.long.paused){ snd.long.pause(); snd.long.currentTime = 0; } }catch(e){}
+    webLongOff();
+  }
+
+  function beep(freq, dur, vol){ playTick((freq || 1075) / 1075, vol || 0.35); }
+
+  // 回前台恢复音频上下文；切后台时立刻停长鸣
+  document.addEventListener('visibilitychange', function(){
+    if (document.hidden){ longOff(); return; }
+    var ac = audioCtx();
+    if (ac && ac.state !== 'running'){ try{ ac.resume().catch(function(){}); }catch(e){} }
+  });
+
+  // 任意触摸/点击都补一次静默解锁（iOS 有时中途收回播放权限）
+  document.addEventListener('touchstart', function(){ unlockAudio(false); }, { passive:true });
+  document.addEventListener('click', function(){ unlockAudio(false); });
+  // 周期性兜底 resume，防止 AudioContext 被系统挂起后一直不出声
+  setInterval(function(){
+    var ac = audio.ctx;
+    if (ac && ac.state !== 'running'){ try{ ac.resume().catch(function(){}); }catch(e){} }
+  }, 15000);
 
   /* -------------------- 接近角 / 离去角 限位 -------------------- */
   // 车头俯仰：正 = 车头抬起（后保险杠吃紧，受离去角约束）
-  function headPitch(){ return (state.absLon || 0) * HEADING; }
+  // 用校准后的相对角（state.lon），零点才是「车停的地面」，坡上开机也不会提前误报
+  function headPitch(){ return (state.lon || 0) * HEADING; }
 
+  /* 三档判定：以限位线为 100%
+       0 ~ 70%     safe   安全区：不闪、不响
+       70% ~ 95%   radar  雷达递进：闪 + 嘀嘀嘀（越靠近越急越高）
+       >= 95%      long   长鸣：持续风鸣 + 快闪 */
+  var SAFE_R = 0.70, LONG_R = 0.95;
   function judge(hp){
-    if (hp >=  DEPARTURE)                 return { level:'alarm', which:'dep' };
-    if (hp <= -APPROACH)                  return { level:'alarm', which:'app' };
-    if (hp >=  DEPARTURE - PRE_ALERT)     return { level:'warn',  which:'dep' };
-    if (hp <= -(APPROACH - PRE_ALERT))    return { level:'warn',  which:'app' };
-    return { level:'safe', which:null };
+    var which = hp >= 0 ? 'dep' : 'app';
+    var lim = which === 'dep' ? DEPARTURE : APPROACH;
+    var r = Math.abs(hp) / lim;
+    if (state.calPending) return { level:'safe', which:which, r:r, lim:lim, pending:true };
+    var level = r >= LONG_R ? 'long' : (r >= SAFE_R ? 'radar' : 'safe');
+    return { level: level, which: which, r: r, lim: lim };
   }
 
   function layoutLimits(){
@@ -495,28 +571,34 @@
     elSlopeDown.textContent = HEADING === 1 ? '下坡' : '上坡';
   }
 
-  // 嘀嘀嘀：超限 = 三连急响后停顿；预警 = 慢速单响
-  var beatLast = 0, beatIdx = 0;
+  /* 雷达递进报警：
+       70% ~ 95%  嘀…嘀…嘀，越接近限位线间隔越短（560ms→120ms）、音高越高（1.0k→1.45k）
+       >= 95%     直接长鸣（持续风鸣），超得越多越响 */
+  var alarmLast = 0;
   setInterval(function(){
     var j = judge(headPitch());
-    if (audio.muted || j.level === 'safe'){ beatIdx = 0; return; }
-    var now = Date.now();
-    if (j.level === 'alarm'){
-      var gap = beatIdx >= 3 ? 700 : 170;
-      if (now - beatLast >= gap){
-        beatLast = now;
-        var newRound = beatIdx >= 3 || beatIdx === 0;
-        beatIdx = beatIdx >= 3 ? 1 : beatIdx + 1;
-        beep(1250, 0.09, 0.36);
-        if (newRound) vibrate([45,60,45,60,45]);
-      }
-    } else {
-      if (now - beatLast >= 560){
-        beatLast = now;
-        beep(880, 0.09, 0.2);
-      }
+    if (audio.muted || j.level === 'safe'){
+      longOff(); alarmLast = 0;
+      return;
     }
-  }, 30);
+    if (j.level === 'long'){
+      longOn(0.5 + Math.min(0.45, (j.r - LONG_R) * 2.0));
+      if (Date.now() - state.lastVibe > 900){ state.lastVibe = Date.now(); vibrate([140,80,140,80]); }
+      return;
+    }
+    longOff();
+    var p = (j.r - SAFE_R) / (LONG_R - SAFE_R);
+    p = p < 0 ? 0 : (p > 1 ? 1 : p);
+    var gap  = 560 - 440 * p;
+    var rate = 0.94 + 0.42 * p;
+    var vol  = 0.30 + 0.22 * p;
+    var now = Date.now();
+    if (now - alarmLast >= gap){
+      alarmLast = now;
+      playTick(rate, vol);
+      if (p > 0.55) vibrate(26);
+    }
+  }, 25);
 
   function render(){
     var lat = state.lat, lon = state.lon, tot = state.tot;
@@ -545,25 +627,42 @@
     var ang = Math.max(-45, Math.min(45, lat)) * 2;
     elNeedle.style.transform = 'translateX(-1px) rotate(' + ang.toFixed(1) + 'deg)';
 
-    setLevelClass(tot);
-
-    // 接近角 / 离去角 限位判定与视觉告警
+    // 接近角 / 离去角 三档判定：安全不闪 / 预警闪 + 嘀嘀嘀 / 超限长鸣
     var j = judge(headPitch());
-    var alarm = j.level === 'alarm';
-    document.body.classList.toggle('alarm', alarm);
-    elLimUp.classList.toggle('hit', alarm && j.which === 'dep');
-    elLimDown.classList.toggle('hit', alarm && j.which === 'app');
+    setLevelClass(j.r);
+    var longA = j.level === 'long';
+    document.body.classList.toggle('radar', j.level === 'radar');
+    document.body.classList.toggle('alarm', longA);
+    // 闪烁节奏随比例加快：70% ≈ 0.62s 一拍，95% 起 0.13s 快闪
+    if (j.level !== 'safe'){
+      var bp = (j.r - SAFE_R) / (LONG_R - SAFE_R);
+      bp = bp < 0 ? 0 : (bp > 1 ? 1 : bp);
+      var bd = longA ? 0.13 : (0.62 - 0.40 * bp);
+      document.documentElement.style.setProperty('--blink', bd.toFixed(2) + 's');
+    }
+    // 限位线点亮 = 真的到达限位线
+    elLimUp.classList.toggle('hit', longA && j.which === 'dep');
+    elLimDown.classList.toggle('hit', longA && j.which === 'app');
     elTagDep.classList.toggle('on', j.level !== 'safe' && j.which === 'dep');
     elTagApp.classList.toggle('on', j.level !== 'safe' && j.which === 'app');
-    // 盘面上坡/下坡框：超限时对应方向变红
+    // 盘面上坡/下坡框：到限位时对应方向变红
     var upIsDep = HEADING === 1;   // 顶部朝车头时，屏幕上坡 = 离去角
     elSlopeUp.classList.toggle('hit',
-      alarm && ((j.which === 'dep' && upIsDep) || (j.which === 'app' && !upIsDep)));
+      longA && ((j.which === 'dep' && upIsDep) || (j.which === 'app' && !upIsDep)));
     elSlopeDown.classList.toggle('hit',
-      alarm && ((j.which === 'app' && upIsDep) || (j.which === 'dep' && !upIsDep)));
-    if (alarm && Date.now() - state.lastVibe > 400){
+      longA && ((j.which === 'app' && upIsDep) || (j.which === 'dep' && !upIsDep)));
+    if (j.level === 'radar' && j.r > 0.86 && Date.now() - state.lastVibe > 400){
       state.lastVibe = Date.now();
-      vibrate([45, 55, 45, 55, 45]);
+      vibrate([30, 40, 30]);
+    }
+    // 状态胶囊实时显示档位与「到限位线的百分比」
+    if (state.running && state.mode !== 'none'){
+      var pct = Math.round(j.r * 100);
+      var pre = state.calPending ? '校准中 ' : (state.mode === 'motion' ? '重力 ' : '方向 ');
+      elStatus.textContent = pre + (j.level === 'safe' ? '安全 ' + pct + '%'
+        : j.level === 'radar' ? '预警 ' + pct + '%'
+        : '超限 ' + pct + '% 长鸣');
+      elStatus.className = 'status ' + (j.level === 'safe' ? 'on' : (j.level === 'radar' ? 'notice' : 'err'));
     }
   }
 
@@ -601,17 +700,16 @@
     if (listening) return;
     listening = true;
     state.running = true;
-    unlockAudio();   // 借用户点击手势解锁音频
-    // 启用后立即试听两声，现场确认声音通道是否可用
+    armAutoCal();    // 打开即自动校准置零，不用点「校准置零」
+    // 启用后立刻试听一声，现场确认声音通道是否可用（点「启用」时已在手势内解锁过）
     setTimeout(function(){
-      unlockAudio();
-      beep(1250, 0.09, 0.36);
-      setTimeout(function(){ beep(1250, 0.09, 0.36); }, 210);
-    }, 300);
+      unlockAudio(true);
+      setTimeout(function(){ playTick(1.0, 0.5); }, 220);
+    }, 260);
     window.addEventListener('deviceorientation', onOrientation, true);
     window.addEventListener('devicemotion', onMotion, true);
     elStatus.className = 'status on';
-    elHint.textContent = '已启用：超出接近角 ' + APPROACH + '° / 离去角 ' + DEPARTURE + '° 时小球闪烁并「嘀嘀嘀」。若刚没听到试听声，请关闭手机侧边静音键并把媒体音量调大';
+    elHint.textContent = '已启用并自动置零：到限位线 70%（接近 ' + Math.round(APPROACH*SAFE_R*10)/10 + '° / 离去 ' + Math.round(DEPARTURE*SAFE_R*10)/10 + '°）起小球闪 + 「嘀嘀嘀」，95%（' + Math.round(APPROACH*LONG_R*10)/10 + '° / ' + Math.round(DEPARTURE*LONG_R*10)/10 + '°）起长鸣。没听到试听声就关掉手机侧边静音键、调大媒体音量';
     setTimeout(function(){
       if (!state.running) return;
       if (Date.now() - lastEvent > 2500 && state.mode === 'none'){
@@ -620,7 +718,7 @@
         elStatus.textContent = '无传感器数据';
         elHint.textContent = '未收到传感器数据：请确认用 HTTPS 打开，且已在系统设置中允许浏览器访问运动与方向';
       } else {
-        elStatus.textContent = state.mode === 'motion' ? '重力模式' : '方向模式';
+        elStatus.textContent = (state.mode === 'motion' ? '重力 ' : '方向 ') + '安全 ' + Math.round(judge(headPitch()).r * 100) + '%';
       }
     }, 2000);
     requestWakeLock();
@@ -670,7 +768,11 @@
     });
   }
 
-  $('btnAuth').addEventListener('click', authorize);
+  // 关键：必须在 click 的同步调用栈里解锁音频，iOS 才允许后续 play()（放进 Promise 里会丢失手势上下文而永久静音）
+  $('btnAuth').addEventListener('click', function(){
+    unlockAudio(true);
+    authorize();
+  });
 
   // 交互兜底：未授权时，任意点击也可尝试
   document.addEventListener('click', function(){
@@ -678,7 +780,7 @@
   }, { once:true });
 
   function calibrate(silent){
-    if (!silent) autoCalArmed = false;   // 手动校准后不再被自动校准覆盖
+    if (!silent){ autoCal.on = false; state.calPending = false; }   // 手动校准后不再被自动校准覆盖
     var p = project(state._lastGrav || {x:0, y:0, z:-1});
     state.calLat = p.lat;
     state.calLon = p.lon;
@@ -698,7 +800,7 @@
     state.calLon = 0;
     vibrate(12);
     elHint.textContent = '校准已重置，读数回到绝对倾角';
-    if (!autoCalArmed && state._lastGrav) update(state._lastGrav);   // 立即按绝对倾角刷新
+    if (!autoCal.on && state._lastGrav) update(state._lastGrav);   // 立即按绝对倾角刷新
   });
 
   $('btnSound').addEventListener('click', function(){
@@ -706,10 +808,10 @@
     audio.muted = !audio.muted;
     this.textContent = audio.muted ? '🔇' : '🔔';
     this.classList.toggle('off', audio.muted);
-    if (!audio.muted){ beep(1180, 0.09, 0.3); setTimeout(function(){ beep(1180, 0.09, 0.3); }, 200); }
+    if (!audio.muted){ playTick(1.0, 0.45); setTimeout(function(){ playTick(1.0, 0.45); }, 220); }
     elHint.textContent = audio.muted
-      ? '声音已关闭，超限仅闪屏 + 震动提示'
-      : '声音已开启（已试听两声）。若听不到：关闭手机侧边静音键、调大媒体音量后重开一次';
+      ? '声音已关闭，仅保留闪烁 + 震动提示'
+      : '声音已开启（已试听两声）。若仍听不到：关掉手机侧边静音键、把媒体音量调大，再点一次这个按钮试听';
   });
 
   $('btnFlip').addEventListener('click', function(){
@@ -737,27 +839,62 @@
     elHint.textContent = 'iPhone 全屏：Safari 分享按钮 →「添加到主屏幕」，从桌面图标打开即为全屏';
   });
 
-  // 记录最近一次重力向量，供校准使用；并做「打开即自动校准置零」
-  var autoCalArmed = true, autoCalTs = 0, autoCalN = 0, autoCalLat = 0, autoCalLon = 0;
+  /* ---------------- 打开即自动校准置零（完全不用点按钮） ----------------
+     传感器数据一到就开始采样：采满约 1.1 秒的稳定样本取平均作为零点。
+     采样这 1 秒内暂不报警，采完立刻恢复正常判定；
+     若期间检测到明显晃动（正在放手机 / 车在动），自动重来一轮，最多 3 轮。 */
+  var autoCal = { on:true, t0:0, n:0, lat:0, lon:0, jitter:0, prev:null, tries:0 };
+  function armAutoCal(){
+    autoCal.on = true; autoCal.t0 = 0; autoCal.n = 0;
+    autoCal.lat = 0; autoCal.lon = 0; autoCal.jitter = 0; autoCal.prev = null;
+    state.calPending = true;
+    if (state.running){
+      elStatus.className = 'status notice';
+      elStatus.textContent = '自动校准中…';
+    }
+    // 兜底：4 秒还没采到样本就放弃自动校准并照常报警，绝不把报警关死
+    if (autoCal.guard) clearTimeout(autoCal.guard);
+    autoCal.guard = setTimeout(function(){
+      if (state.calPending){
+        state.calPending = false;
+        autoCal.on = false;
+        elHint.textContent = '自动校准超时（没收到稳定传感器数据）：现按绝对倾角显示与报警，请点「校准置零」手动设零点';
+      }
+    }, 4000);
+  }
+  function finishAutoCal(){
+    autoCal.on = false;
+    if (autoCal.guard){ clearTimeout(autoCal.guard); autoCal.guard = null; }
+    if (autoCal.n > 0){
+      state.calLat = autoCal.lat / autoCal.n;
+      state.calLon = autoCal.lon / autoCal.n;
+      state.hasCal = true;
+    }
+    state.calPending = false;
+    if (state._lastGrav) update(state._lastGrav);   // 立即刷新为 0.00°
+    elHint.textContent = '已自动校准置零（无需点击）：当前姿态 = 0.00°，默认上坡模式。70% 起「嘀嘀嘀」雷达预警，95% 起持续长鸣；换停车位置请点「校准置零」';
+  }
+
   var _update = update;
   update = function(grav){
     state._lastGrav = grav;
     _update(grav);
-    if (autoCalArmed){
-      if (!autoCalTs) autoCalTs = Date.now();
-      var pp = project(grav);
-      autoCalLat += pp.lat;
-      autoCalLon += pp.lon;
-      autoCalN++;
-      // 收满约 0.7 秒、至少 8 帧样本后取平均置零，避免首帧抖动
-      if (autoCalN >= 8 && Date.now() - autoCalTs >= 700){
-        autoCalArmed = false;
-        state.calLat = autoCalLat / autoCalN;
-        state.calLon = autoCalLon / autoCalN;
-        state.hasCal = true;
-        elHint.textContent = '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
-      }
+    if (!autoCal.on) return;
+    var pp = project(grav);
+    if (!autoCal.t0) autoCal.t0 = Date.now();
+    if (autoCal.prev){
+      autoCal.jitter += Math.abs(pp.lat - autoCal.prev.lat) + Math.abs(pp.lon - autoCal.prev.lon);
     }
+    autoCal.prev = { lat: pp.lat, lon: pp.lon };
+    autoCal.lat += pp.lat; autoCal.lon += pp.lon; autoCal.n++;
+    if (Date.now() - autoCal.t0 < 1100 || autoCal.n < 12) return;
+    if (autoCal.jitter / autoCal.n > 0.55 && autoCal.tries < 3){
+      autoCal.tries++;
+      autoCal.on = true; autoCal.t0 = 0; autoCal.n = 0;
+      autoCal.lat = 0; autoCal.lon = 0; autoCal.jitter = 0; autoCal.prev = null;
+      return;
+    }
+    finishAutoCal();
   };
 
   // 前后台切换
