@@ -222,7 +222,7 @@
     <button class="ghost" id="btnFlip">↕ 车头↑</button>
     <button class="ghost" id="btnFull">全屏</button>
   </footer>
-  <div class="hint" id="hint">启用后自动校准置零（当前姿态记为 0.00°），默认上坡模式；荣放 20 款后保守限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留出前杠与排气管余量），到限位 70% 起雷达式递进「嘀嘀」预警，95% 或超过则直接长鸣</div>
+  <div class="hint" id="hint">手机<b>平放</b>在车上、或<b>装在手机支架上（竖立、略后仰）都可以</b>：车停水平路面时点「校准置零」（或等自动校准），把当前姿态记为 0.00°，之后读到的就是纯坡度——支架那 15-30° 的安装倾角会被自动扣掉，不用特意取下来平放。默认上坡模式；荣放 20 款后保守限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留出前杠与排气管余量），到限位 70% 起雷达式递进「嘀嘀」预警，95% 或超过则直接长鸣</div>
 </div>
 
 <div id="gate">
@@ -272,6 +272,7 @@
   var MIN_UP  = 0.25;
   var FULL_UP = 0.40;
   var UPRIGHT_UP = (MIN_UP + FULL_UP) / 2;   // 统一的「侧立」判定线，全页只用这一个门限
+  var mountMode = '--';                      // 解算族：flat=平放 / stand=竖立（装车支架），仅用于状态显示与排障
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
 
   /* ---- 滤波与报警去抖 ---- */
@@ -386,7 +387,8 @@
     if (!isFinite(lon)) lon = 0;
     if (!isFinite(tot)) tot = 0;
     // up 一并返回：只有手机侧立时 up→0，此时横向/纵向才不可测，需要归零回中
-    return { lat:lat, lon:lon, tot:tot, up:up, sz:sz };
+    // mount 标明当前解算族：flat=手机大致平放（用屏幕上下轴测坡度）、stand=手机竖立/装车支架（用屏幕法线测坡度）
+    return { lat:lat, lon:lon, tot:tot, up:up, sz:sz, mount: useZ ? 'flat' : 'stand' };
   }
 
   /* -------------------- 渲染 -------------------- */
@@ -770,6 +772,7 @@
   function update(grav){
     var p = project(grav);
     state.nSample++;
+    state.up = p.up; state.sz = p.sz; mountMode = p.mount;
 
     // 姿态可信权重：重力在主竖直轴上的分量 up 从 MIN_UP→FULL_UP 线性映射到 0→1。
     // 平放（up≈1）与竖立（up≈1）都能正常测量，只有侧立奇点 up→0 时才淡出。
@@ -833,6 +836,10 @@
     if (idle > 1200) return;                  // 短暂静默（静止时的采样优化）不刷，避免来回跳
     var t = state.mode === 'motion' ? '重力模式'
           : (state.mode === 'orientation' ? '方向模式' : '等待传感器');
+    // 姿态标签：手机平放和装在支架上（竖立）用的是两套解算轴，标出来便于确认识别正确
+    if (t !== '等待传感器' && state.nSample > 0){
+      t += mountMode === 'stand' ? '·支架竖立' : '·平放';
+    }
     if (elStatus.textContent !== t){
       elStatus.className = 'status on';
       elStatus.textContent = t;
@@ -971,9 +978,12 @@
       if (!state.hasCal){ state.calLat = 0; state.calLon = 0; }
       // 已有基准则原样保留
     } else if (state.nSample > 0){
-      // 用平滑后的绝对角做基准：单帧值含噪声，直接写进基准会形成恒定零点偏移
-      state.calLat = state.absLat;
-      state.calLon = state.absLon;
+      // 基准取「当前这一帧的投影值」，同时把平滑状态一并同步到该值。
+      // 改前只写 state.absLat/absLon（低通输出）：刚启动就校准时低通还在爬升，
+      // 基准会停在半路，留下 0.5-1° 的恒定零点偏（装支架时安装角大、爬升更久，偏得更明显），
+      // 表现为「校准完不是 0.00°，上坡读数还差一截」。
+      state.calLat = pp.lat; state.calLon = pp.lon;
+      state.absLat = pp.lat; state.absLon = pp.lon;
     } else {
       // 还没收到任何有效帧：用当前重力反算一次，并同步平滑状态，避免首帧跳变
       state.calLat = pp.lat; state.calLon = pp.lon;
@@ -985,10 +995,13 @@
       vibrate(20);
       if (upright){
         elHint.textContent = '已校准：手机处于侧立姿态，横向/纵向此时不可测，已保留原零点；请转回平放或竖立后再校一次';
+      } else if (tiltNow > 3){
+        // 支架竖立时手机本身就不水平，这里的偏离主要来自支架安装角（20-30° 很常见），
+        // 它会被一并扣成零点 —— 这不是问题，问题是「车此刻是否停在坡上」同样会被扣掉。
+        elHint.textContent = '已校准：已把当前姿态（含支架安装倾角/平放姿态，约 ' + tiltNow.toFixed(0) + '°）一并记为 0.00°。'
+          + '只要校准这一刻车是停在水平路面上，之后读到的就是纯坡度；若车正停在坡上，零点会被带偏，请挪到平路重校一次';
       } else {
-        elHint.textContent = tiltNow > 3
-          ? '已校准：当前姿态偏离水平面约 ' + tiltNow.toFixed(1) + '°，已按此姿态记 0.00°。若此时在坡上，零点会被带偏，建议停在水平路面重校'
-          : '已校准：当前姿态记为 0.00°，可点「重置」清除';
+        elHint.textContent = '已校准：当前姿态记为 0.00°，可点「重置」清除';
       }
       if (state._lastGrav) update(state._lastGrav);   // 立即刷新为 0.00°
     }
@@ -1055,9 +1068,14 @@
     //   侧立时 lat/lon 是噪声决定的随机值；车身在加速/刹车/过坎时 gravity 向量被污染。
     // 这两类样本一旦混进平均值，零点就会被带偏好几度，之后所有报警阈值跟着整体偏移。
     if (!state.upright && state.quality >= 0.6){
-      autoCalLat += state.absLat;
-      autoCalLon += state.absLon;
-      autoCalTot += state.tot;
+      // 采「原始投影值」而不是低通的 absLat/absLon：
+      // 低通从 0 起步爬升，刚打开就校准时窗口内的样本还没爬到真值，
+      // 平放时差 0.3° 不明显，装支架（安装角 20-30°）时平均下来差 0.8°，
+      // 表现为「自动校准后不是 0.00°、上坡读数普遍偏小一截」。
+      var pRaw = project(grav);
+      autoCalLat += pRaw.lat;
+      autoCalLon += pRaw.lon;
+      autoCalTot += Math.sqrt(pRaw.lat * pRaw.lat + pRaw.lon * pRaw.lon);
       autoCalN++;
     } else if (autoCalN === 0 && Date.now() - autoCalTs > 15000 && !autoCalWarned){
       autoCalWarned = true;
@@ -1069,10 +1087,17 @@
       state.calLat = autoCalLat / autoCalN;
       state.calLon = autoCalLon / autoCalN;
       state.hasCal = true;
+      // 平滑状态同步到新基准：不同步的话，低通要从爬升途中的旧值追上基准，会先蹦出一个鬼影读数
+      state.absLat = state.calLat;
+      state.absLon = state.calLon;
       var avgTot = autoCalTot / autoCalN;
-      elHint.textContent = avgTot > 3
-        ? '已自动校准置零：启动时车身并不水平（偏离约 ' + avgTot.toFixed(1) + '°，可能停在上坡），零点已被带偏。请把车停到平地后点「校准置零」重校'
-        : '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
+      // 支架竖立时「偏离水平面 20-30°」是安装角，不是坡道，不能按坡道报警去提示
+      elHint.textContent = (mountMode === 'stand')
+        ? '已自动校准置零：按支架安装角约 ' + avgTot.toFixed(0) + '° 整体记为 0.00°，之后读到的就是纯坡度。'
+          + '若打开页面这一刻车正停在坡上，零点会被一起扣掉，挪到平路点一次「校准置零」即可'
+        : (avgTot > 3
+          ? '已自动校准置零：启动时车身并不水平（偏离约 ' + avgTot.toFixed(1) + '°，可能停在上坡），零点已被带偏。请把车停到平地后点「校准置零」重校'
+          : '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」');
       _update(state._lastGrav);   // 让新零点立即生效，不必等下一帧
     }
   };
@@ -1108,6 +1133,9 @@
     return {
       lat: state.lat, lon: state.lon, tot: state.tot,
       upright: state.upright, quality: state.quality, mode: state.mode,
+      up: state.up, sz: state.sz, mount: mountMode,
+      absLat: state.absLat, absLon: state.absLon,
+      calLat: state.calLat, calLon: state.calLon,
       paused: state.paused, hasCal: state.hasCal, nSample: state.nSample,
       gzSign: gzSign, longOn: longOn, level: levelSql,
       lim: g.lim, which: g.which, ratio: g.ratio,
