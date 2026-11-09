@@ -248,27 +248,45 @@
   var state = {
     running:false,
     mode:'none',          // 'orientation' | 'motion' | 'none'
+    paused:false,         // 后台挂起：暂停报警判定与长鸣
     lat:0, lon:0, tot:0,
     calLat:0, calLon:0,
     hasCal:false,
     wakeLock:null,
-    lastVibe:0,
     inLevel:false,
-    holdLat:0,            // 当前采用的横向绝对值（渲染/校准基准）
-    absLat:0,             // 平滑后的横向绝对值
-    goodLat:0,            // 最近一次「可信姿态」下的横向角
+    absLat:0,             // 平滑后的横向（相对设备）角，不受侧立影响
+    absLon:0,             // 平滑后的纵向（相对设备）角，不受侧立影响
+    quality:1,            // 数据可信度 0~1：由加速度模长偏离 1g 的程度给出，刹车/颠簸时降低
     upright:false,        // 手机侧立（up≈0）：横向/纵向角不可测
-    trusted:false,        // 横向角当前是否可信（双阈值迟滞状态）
+    rawUnit:null,         // 最近一帧未做符号翻转的加速度单位向量（供欧拉角交叉校验符号）
+    lastBeta:null,        // 最近一次欧拉角俯仰（度），用于交叉校验重力符号约定
+    lastMag:0,            // 最近一帧加速度模长（原始单位，g 或 m/s²）
+    nSample:0,            // 已接收的有效帧数
+    _lastGrav:null,       // 最近一次重力向量，供校准复用
     smooth:{x:0,y:0}
   };
 
   var LEVEL_DEG = 0.5;      // 水平阈值
-  // 侧立奇点门限：重力在主竖直轴上的分量（up）低于 MIN_UP 时，手机是「侧立」（长边竖直、屏幕朝侧面），
-  // 横向/纵向角在数学上都无意义，此时才需要归零；平放与竖立两种正常姿态的 up 都接近 1，可正常测量。
+  // 侧立奇点门限：重力在主竖直轴上的分量（up）低于 UPRIGHT_UP 时，手机是「侧立」（长边竖直、屏幕朝侧面），
+  // 横向/纵向角在数学上都无意义，此时才需要淡出归零；平放与竖立两种正常姿态的 up 都接近 1，可正常测量。
   var MIN_UP  = 0.25;
   var FULL_UP = 0.40;
-  var WARN_DEG  = 3.0;      // 警示阈值
+  var UPRIGHT_UP = (MIN_UP + FULL_UP) / 2;   // 统一的「侧立」判定线，全页只用这一个门限
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
+
+  /* ---- 滤波与报警去抖 ---- */
+  var LPF_LAT = 0.22;       // 横向低通系数（60Hz 下约 0.1s 时间常数）
+  var LPF_LON = 0.20;       // 纵向低通系数，纵向参与报警，必须平滑
+  var LPF_MIN = 0.05;       // 数据质量差时的最低响应系数
+  var JUMP_DEG = 2.5;       // 干净数据下超过该变化量直接跟随（保证响应速度）
+  var Q_TOL = 0.10;         // 模长偏离 1g 的比例容忍度：超过即认为叠加了车身加速度
+  var Q_FULL = 0.30;        // 偏离达到该比例时数据完全不可信
+  // 报警等级去抖：30ms 定时器读到的是瞬时值，单帧噪声（过坎、手磕）就可能把 ratio 顶过 95% 而立刻长鸣。
+  // 升档也要确认帧，只是确认更快：warn 3 帧≈90ms、alarm 4 帧≈120ms、回落 safe 6 帧≈180ms，
+  // 既不会听到假长鸣，也不会因为一帧回落就把长鸣掐断造成「打嗝」。
+  var HOLD_WARN  = 3;       // 进入预警需连续帧数
+  var HOLD_ALARM = 4;       // 进入长鸣需连续帧数
+  var HOLD_SAFE  = 6;       // 退出报警需连续帧数
 
   /* ---- 车辆通过性限位 ---- */
   // 荣放 RAV4（2020 款及以后，XA50 平台）官方：接近角 18.1° / 离去角 20.3°
@@ -276,17 +294,20 @@
   var APPROACH  = 17;       // 接近角（保守）
   var DEPARTURE = 19;       // 离去角（保守）
   var VIEW_RATIO = 0.86;    // 限位线所在半径比例：气泡到达线 = 已达保守极限
-  var PRE_ALERT = 3;        // 旧版提前预警距离（现行按比例分级 WARN_RATIO / ALARM_RATIO）
+  var LATERAL_REF = 30;     // 气泡横向满偏参考角（横向不做限位判定，仅作方向指示）
   var HEADING = 1;          // 1 = 手机顶部朝车头；-1 = 顶部朝车尾
 
   /* -------------------- 姿态解算 -------------------- */
-  // 屏幕方向角（0/90/180/270），统一取正值
+  // 屏幕方向角（0/90/180/270），语义统一为「屏幕内容顺时针旋转角」，与 screen.orientation.angle 一致
   function screenAngle(){
     if (screen && screen.orientation && typeof screen.orientation.angle === 'number'){
       return ((screen.orientation.angle % 360) + 360) % 360;
     }
+    // 回退通道：window.orientation 是旧规范，符号与 angle 相反（-90 对应 angle 90），
+    // 直接取正会把横屏时的屏幕坐标系整体镜像，横向/纵向角符号翻转，必须取反后再归一。
     if (typeof window.orientation === 'number'){
-      return ((window.orientation % 360) + 360) % 360;
+      var o = window.orientation;
+      return ((((360 - o) % 360) + 360) % 360);
     }
     return 0;
   }
@@ -311,12 +332,35 @@
   // 由 accelerationIncludingGravity 求“重力朝下”单位向量（自适应各平台符号）
   // 关键：z 轴符号用「迟滞锁定」，只在 |gz| 足够大（手机明显非竖立）时判定一次。
   // 若每帧按瞬时 gz 判符号，竖立时 gz≈0 会被噪声来回跨过 0，导致整向量正负翻转，横向角瞬间跳 ±180°。
-  var gzSign = 0;            // 0=未判定（不翻转）；-1=需要翻转
+  var gzSign = 0;            // 0=未判定（不翻转）；1=平台已按「重力朝下为负」给出；-1=需要翻转
   var GZ_HYST = 0.25;
+
+  // 用欧拉角俯仰对「重力符号约定」做交叉校验，专治竖立开局：
+  // 手机竖立时加速度计 gz≈0，|gz| 判据永远不成立，gzSign 会一直锁在 0（不翻转），
+  // 于是整个重力向量符号反了，横向角正负翻转、Android 与 iOS 表现不一致。
+  // 顶部朝上（beta>0）时重力在设备 y 轴上必为负，据此可独立判定平台符号。
+  function signFromPitch(gy){
+    var b = state.lastBeta;
+    if (b === null || !isFinite(b)) return 0;
+    var sb = Math.sin(b * Math.PI / 180);
+    if (Math.abs(sb) < 0.5) return 0;        // 接近平放：俯仰没有判别力，交给 |gz| 判据
+    if (Math.abs(gy) < 0.4) return 0;        // y 轴分量太小，同样不可判
+    return (gy * -sb) > 0 ? 1 : -1;
+  }
+
   function gravityFromMotion(ax, ay, az){
     var m = Math.sqrt(ax*ax + ay*ay + az*az) || 1;
     var gx = ax/m, gy = ay/m, gz = az/m;
-    if (Math.abs(gz) >= GZ_HYST){ gzSign = gz > 0 ? -1 : 1; }   // 只在可信姿态下更新符号结论
+    state.rawUnit = { x:gx, y:gy, z:gz };     // 原始符号留存，供欧拉角交叉校验
+    state.lastMag = m;                        // 原始模长（g 或 m/s²），供数据质量评估
+    if (Math.abs(gz) >= GZ_HYST){
+      var s = gz > 0 ? -1 : 1;
+      // 迟滞：符号已锁定时，只有分量明显更大（≥2 倍门限）才允许改写；
+      // 否则在门限附近会被噪声来回翻转，整向量正负跳变会让横向角瞬间跳 ±180°。
+      if (gzSign === 0 || s === gzSign || Math.abs(gz) >= GZ_HYST * 2){ gzSign = s; }
+    } else if (gzSign === 0){
+      gzSign = signFromPitch(gy);             // 竖立族首帧：借欧拉角俯仰立即锁定，不等平放
+    }
     if (gzSign < 0){ gx = -gx; gy = -gy; gz = -gz; }
     return { x:gx, y:gy, z:gz };
   }
@@ -355,16 +399,21 @@
   }
 
   // 颜色分级：safe 保持常态（不报警），warn 琥珀提示，alarm 红色闪烁
+  var lastLevelCls = '';
   function setLevelClass(g, tot){
     var cls = g.level === 'alarm' ? 'bad' : (g.level === 'warn' ? 'warn' : 'ok');
-    if (tot <= LEVEL_DEG && !state.inLevel){
+    // 侧立奇点姿态下 tot 不代表任何可用姿态，不参与「已水平」判定
+    if (!state.upright && tot <= LEVEL_DEG && !state.inLevel){
       state.inLevel = true;
       vibrate([12,60,12]);
-    } else if (tot > LEVEL_DEG * 1.6){
+    } else if (state.upright || tot > LEVEL_DEG * 1.6){
       state.inLevel = false;
     }
-    document.body.classList.remove('ok','warn','bad');
-    document.body.classList.add(cls);
+    if (cls !== lastLevelCls){
+      document.body.classList.remove('ok','warn','bad');
+      document.body.classList.add(cls);
+      lastLevelCls = cls;
+    }
   }
 
   function vibrate(p){ try{ if (navigator.vibrate) navigator.vibrate(p); }catch(e){} }
@@ -512,22 +561,30 @@
   var WARN_RATIO  = 0.70;
   var ALARM_RATIO = 0.95;
   function grade(hp){
-    var lim   = hp >= 0 ? DEPARTURE : APPROACH;
-    var which = hp >= 0 ? 'dep' : 'app';
+    // 符号对应关系（改前写反，导致上坡一路静音）：
+    //   hp > 0 = 车头方向抬起 = 上坡 → 最先蹭地的是车头前悬 → 受「接近角」约束
+    //   hp < 0 = 车头方向下沉 = 下坡 → 最先蹭地的是车尾后悬 → 受「离去角」约束
+    var lim   = hp >= 0 ? APPROACH : DEPARTURE;
+    var which = hp >= 0 ? 'app' : 'dep';
     var ratio = Math.abs(hp) / lim;
     var level = ratio >= ALARM_RATIO ? 'alarm' : (ratio >= WARN_RATIO ? 'warn' : 'safe');
     return { level: level, which: which, ratio: ratio, lim: lim };
   }
 
+  var gaugeRMax = 300 * MAX_OFFSET;   // 盘面半径缓存：由 layoutLimits 刷新，render 每帧读取而不触发布局计算
   function layoutLimits(){
     var w = elGauge.clientWidth || 300;
     var rMax = w * MAX_OFFSET;
-    var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;  // 气泡向上所对应的角
-    var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
+    gaugeRMax = rMax;
+    // 屏幕上方（气泡往上跑的方向）对应的限位角：
+    //   顶部朝车头(HEADING=1)：屏幕向上 = 车头上坡 = 接近角
+    //   顶部朝车尾(HEADING=-1)：屏幕向上 = 车头下沉 = 下坡 = 离去角
+    var upLimit   = HEADING === 1 ? APPROACH  : DEPARTURE;
+    var downLimit = HEADING === 1 ? DEPARTURE : APPROACH;
     elLimUp.style.top   = 'calc(50% + ' + (-rMax * VIEW_RATIO).toFixed(1) + 'px)';
     elLimDown.style.top = 'calc(50% + ' + ( rMax * VIEW_RATIO).toFixed(1) + 'px)';
-    elUpTag.textContent   = upLimit + '° ' + (HEADING === 1 ? '离去角' : '接近角');
-    elDownTag.textContent = downLimit + '° ' + (HEADING === 1 ? '接近角' : '离去角');
+    elUpTag.textContent   = upLimit + '° ' + (HEADING === 1 ? '接近角' : '离去角');
+    elDownTag.textContent = downLimit + '° ' + (HEADING === 1 ? '离去角' : '接近角');
     elTagApp.textContent = '接近 ' + APPROACH + '°';
     elTagDep.textContent = '离去 ' + DEPARTURE + '°';
     // 盘面框型提示：随车头朝向对调上坡 / 下坡
@@ -579,15 +636,34 @@
     try{ if (snd.long){ snd.long.pause(); snd.long.currentTime = 0; } }catch(e){}
   }
 
+  /* -------- 报警等级去抖：必须连续 N 拍稳定在同一档才切换（帧数常量见 HOLD_*） -------- */
+  var levelSql = 'safe', levelCnt = 0;
+  function debounceLevel(g, allow){
+    var target = allow ? g.level : 'safe';
+    if (target === levelSql){ levelCnt = 0; return levelSql; }
+    levelCnt++;
+    var need = target === 'safe' ? HOLD_SAFE : (target === 'alarm' ? HOLD_ALARM : HOLD_WARN);
+    if (levelCnt >= need){ levelSql = target; levelCnt = 0; }
+    return levelSql;
+  }
+  function resetLevel(){ levelSql = 'safe'; levelCnt = 0; }
+
   setInterval(function(){
+    // 后台 / 未启用 / 暂停时不发声；暂停必须在进入后台那一刻就把长鸣掐掉，否则会一直响到切回前台
+    if (!state.running || state.paused){
+      stopLong(); beatLast = 0; beatIdx = 0; resetLevel();
+      return;
+    }
     var g = grade(relPitch());
-    if (audio.muted || g.level === 'safe'){
+    // 侧立奇点姿态下纵向角不可测 → 强制回到安全档，避免拿起手机就误长鸣
+    var lv = debounceLevel(g, !state.upright);
+    if (lv === 'safe'){
       stopLong(); beatLast = 0; beatIdx = 0;
       return;
     }
     var now = Date.now();
-    if (g.level === 'alarm'){
-      startLong();
+    if (lv === 'alarm'){
+      if (audio.muted) stopLong(); else startLong();
       if (now - beatLast >= 1300){
         beatLast = now;
         vibrate([55, 60, 55, 60, 55]);
@@ -601,34 +677,57 @@
     var gap = 620 - 480 * r;
     if (now - beatLast >= gap){
       beatLast = now;
-      warnTick(r);
+      if (!audio.muted) warnTick(r);
       if (beatIdx++ % 5 === 0) vibrate(16);
     }
   }, 30);
 
+  // 数值节点更新：文本节点原地改写，避免每帧 innerHTML 重建（60Hz 下每秒 60 次 HTML 解析与重排）
+  function setVal(el, txt){
+    var n = el.firstChild;
+    if (n && n.nodeType === 3){
+      if (n.nodeValue !== txt) n.nodeValue = txt;
+      return;
+    }
+    el.textContent = txt;
+    var em = document.createElement('em');
+    em.textContent = '°';
+    el.appendChild(em);
+  }
+
+  // class 变更缓存：只有状态真的翻转时才碰 DOM，减少样式重算
+  var lastCls = {};
+  function toggleCls(el, cls, on, key){
+    if (lastCls[key] === on) return;
+    lastCls[key] = on;
+    el.classList.toggle(cls, on);
+  }
+
   function render(){
     var lat = state.lat, lon = state.lon, tot = state.tot;
 
-    elLat.innerHTML = fmt(lat) + '<em>°</em>';
-    elLat.classList.toggle('frozen', state.upright);   // 侧立奇点：横向不可测，读数置灰表示保持值
-    elLon.innerHTML = fmt(lon) + '<em>°</em>';
-    elTot.innerHTML = fmt(tot) + '<em>°</em>';
+    setVal(elLat, fmt(lat));
+    setVal(elLon, fmt(lon));
+    setVal(elTot, fmt(tot));
     // 圆球只显示纵向数值（车头/车尾俯仰）
     elGv.textContent = fmt(lon);
 
-    // 气泡位置：纵向按各自的限位角归一化，到达限位线即超限
-    var rMax = (elBubble.parentElement ? elBubble.parentElement.clientWidth : 300) * MAX_OFFSET;
-    var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;
-    var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
+    // 侧立奇点：横向/纵向数学上都不可测，两个读数一起置灰（改前只灰横向、纵向默默归零，表现不一致）
+    toggleCls(elLat, 'frozen', state.upright, 'latFrozen');
+    toggleCls(elLon, 'frozen', state.upright, 'lonFrozen');
+
+    // 气泡位置：纵向按各自的限位角归一化，到达限位线即超限；横向不做限位判定，仅作方向指示
+    var upLimit   = HEADING === 1 ? APPROACH  : DEPARTURE;
+    var downLimit = HEADING === 1 ? DEPARTURE : APPROACH;
     var lonLimit  = lon >= 0 ? upLimit : downLimit;
-    var nx = Math.max(-1, Math.min(1, (lat / 30) * VIEW_RATIO));
-    var ny = Math.max(-1, Math.min(1, (-lon / lonLimit) * VIEW_RATIO));  // 顶部抬起 → 气泡向后（向下）
+    var nx = Math.max(-1, Math.min(1, (lat / LATERAL_REF) * VIEW_RATIO));
+    var ny = Math.max(-1, Math.min(1, (-lon / lonLimit) * VIEW_RATIO));  // 顶部抬起 → 气泡上移（屏幕上方 = 上坡方向）
     // 平滑
     state.smooth.x += (nx - state.smooth.x) * 0.25;
     state.smooth.y += (ny - state.smooth.y) * 0.25;
 
     elBubble.style.transform = 'translate(-50%,-50%) translate(' +
-      (state.smooth.x * rMax).toFixed(1) + 'px,' + (state.smooth.y * rMax).toFixed(1) + 'px)';
+      (state.smooth.x * gaugeRMax).toFixed(1) + 'px,' + (state.smooth.y * gaugeRMax).toFixed(1) + 'px)';
 
     // 指针显示横向倾角
     var ang = Math.max(-45, Math.min(45, lat)) * 2;
@@ -637,65 +736,109 @@
     // 接近角 / 离去角 分级：按相对倾角占限位的比例，70% 起预警、95% 起长鸣
     // 侧立奇点姿态下纵向角无意义，此时不做通过角判定，避免拿起手机就误长鸣
     var j = state.upright
-      ? { level:'safe', which: relPitch() >= 0 ? 'dep' : 'app', ratio:0, lim:0 }
+      ? { level:'safe', which: relPitch() >= 0 ? 'app' : 'dep', ratio:0, lim:0 }
       : grade(relPitch());
     var alarm = j.level === 'alarm';
     setLevelClass(j, tot);
-    document.body.classList.toggle('alarm', alarm);
-    elLimUp.classList.toggle('hit', alarm && j.which === 'dep');
-    elLimDown.classList.toggle('hit', alarm && j.which === 'app');
-    elTagDep.classList.toggle('on', j.level !== 'safe' && j.which === 'dep');
-    elTagApp.classList.toggle('on', j.level !== 'safe' && j.which === 'app');
-    // 盘面上坡/下坡框：超限时对应方向变红
-    var upIsDep = HEADING === 1;   // 顶部朝车头时，屏幕上坡 = 离去角
-    elSlopeUp.classList.toggle('hit',
-      alarm && ((j.which === 'dep' && upIsDep) || (j.which === 'app' && !upIsDep)));
-    elSlopeDown.classList.toggle('hit',
-      alarm && ((j.which === 'app' && upIsDep) || (j.which === 'dep' && !upIsDep)));
-    if (alarm && Date.now() - state.lastVibe > 400){
-      state.lastVibe = Date.now();
-      vibrate([45, 55, 45, 55, 45]);
-    }
+    toggleCls(document.body, 'alarm', alarm, 'bodyAlarm');
+    // 高亮归属直接用「命中的限位角」跟「上/下两条限位线的角」比对：
+    // 改前拿 which 硬对 elLimUp/elLimDown，把 HEADING=-1 时的上下关系写反，警示线亮错方向。
+    var upHit   = alarm && j.lim === upLimit;
+    var downHit = alarm && j.lim === downLimit;
+    toggleCls(elLimUp,   'hit', upHit,   'limUp');
+    toggleCls(elLimDown, 'hit', downHit, 'limDown');
+    toggleCls(elSlopeUp, 'hit', upHit,   'slopeUp');
+    toggleCls(elSlopeDown,'hit', downHit,'slopeDown');
+    toggleCls(elTagApp, 'on', j.level !== 'safe' && j.which === 'app', 'tagApp');
+    toggleCls(elTagDep, 'on', j.level !== 'safe' && j.which === 'dep', 'tagDep');
+    // 震动统一交给报警定时器（去抖后的等级），此处不再重复触发，避免双重震动节拍
+  }
+
+  // 大幅变化的「直通」必须连续两帧同向才生效：真实的倾斜会持续很多帧，
+  // 而过坎、手磕、刹车只会给单帧尖峰。改前单帧超过 JUMP_DEG 就直接写进读数，
+  // 纵向会瞬间闪到十几度，读数抖动同时也是误报的来源。
+  var dirLat = 0, dirLon = 0;
+  function followGain(d, q, k, key){
+    var dir = d > 0 ? 1 : -1;
+    var big = Math.abs(d) > JUMP_DEG && q > 0.7;
+    var prev = key === 'lat' ? dirLat : dirLon;
+    var confirmed = big && prev === dir;      // 上一帧也是同向的大变化 → 判定为真实倾斜
+    if (key === 'lat') dirLat = big ? dir : 0; else dirLon = big ? dir : 0;
+    return confirmed ? 1 : k;
   }
 
   function update(grav){
     var p = project(grav);
-    // 可信度权重 0~1：由「重力在主竖直轴上的分量 up」决定，而不是 |sz|。
-    // 平放（up≈1）与竖立（up≈1）都能正常出横向/纵向读数；只有手机侧立、up→0 的几何奇点才按权重压到 0 回中。
-    // up 从 0.25 到 0.40 线性过渡，避免门限处被噪声反复跨过导致气泡来回跳。
+    state.nSample++;
+
+    // 姿态可信权重：重力在主竖直轴上的分量 up 从 MIN_UP→FULL_UP 线性映射到 0→1。
+    // 平放（up≈1）与竖立（up≈1）都能正常测量，只有侧立奇点 up→0 时才淡出。
     var w = (p.up - MIN_UP) / (FULL_UP - MIN_UP);
     w = w < 0 ? 0 : (w > 1 ? 1 : w);
-    state.upright = w < 0.5;          // 侧立（up<约 0.32）才视为不可测：置灰 + 暂停通过角报警
-    state.absLon = p.lon;
-    var targetLat = p.lat;            // 横向角在平放/竖立两族都真实可测，不再按姿态压缩
-    var dLat = targetLat - state.absLat;
-    // 大幅真实倾斜直通保持响应速度；小变化低通抑制手抖噪声
-    state.absLat = Math.abs(dLat) > 2.5 ? targetLat : state.absLat + dLat * 0.22;
-    if (state.upright) state.absLat *= w;        // 仅侧立奇点附近淡出到 0
-    if (Math.abs(state.absLat) < 0.05) state.absLat = 0;
-    state.holdLat = state.absLat;
-    // 侧立时横向强制为 0（不扣校准零点，否则会显示 -calLat 而偏在一边）
-    state.lat = state.upright ? 0 : state.absLat - (state.hasCal ? state.calLat : 0);
-    state.lon = state.upright ? 0 : p.lon - (state.hasCal ? state.calLon : 0);
-    var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
-    state.tot = t;
+    state.upright = p.up < UPRIGHT_UP;   // 横向/纵向共用同一个侧立门限（改前一个用 w<0.5、一个用 MIN_UP）
+
+    // 数据质量 q：加速度模长偏离 1g 越远（刹车、过坎、车身纵向加速度叠加）越不可信，
+    // 此时降低跟随速度、并禁用「大幅直通」，否则车身加减速会被当成坡度写进纵向角。
+    var q = 1;
+    if (state.lastMag > 0 && isFinite(state.lastMag)){
+      var magG = state.lastMag > 3 ? state.lastMag / 9.80665 : state.lastMag;   // 兼容 g 与 m/s² 两种单位
+      var dev = Math.abs(magG - 1);
+      q = 1 - (dev - Q_TOL) / (Q_FULL - Q_TOL);
+      q = q < 0 ? 0 : (q > 1 ? 1 : q);
+    }
+    state.quality = q;
+
+    // 横向与纵向走同一套低通：纵向直接参与通过角报警，绝不能再拿单帧值。
+    // 干净数据下大幅真实倾斜（>JUMP_DEG）直通保证响应速度，其余情况按 q 调节系数平滑。
+    var kLat = Math.max(LPF_MIN, LPF_LAT * (0.30 + 0.70 * q));
+    var dLat = p.lat - state.absLat;
+    state.absLat += dLat * followGain(dLat, q, kLat, 'lat');
+
+    var kLon = Math.max(LPF_MIN, LPF_LON * (0.30 + 0.70 * q));
+    var dLon = p.lon - state.absLon;
+    state.absLon += dLon * followGain(dLon, q, kLon, 'lon');
+
+    if (Math.abs(state.absLat) < 0.01) state.absLat = 0;
+    if (Math.abs(state.absLon) < 0.01) state.absLon = 0;
+
+    var calLat = state.hasCal ? state.calLat : 0;
+    var calLon = state.hasCal ? state.calLon : 0;
+    // 输出：扣掉校准零点后按侧立权重淡出。横向纵向一视同仁（改前横向乘 w、纵向硬切归零）
+    state.lat = (state.absLat - calLat) * w;
+    state.lon = (state.absLon - calLon) * w;
+    if (Math.abs(state.lat) < 0.02) state.lat = 0;
+    if (Math.abs(state.lon) < 0.02) state.lon = 0;
+    // 合成倾角用未淡出的真实相对角：它只用于「是否已水平」提示，不该被侧立权重污染
+    var dLatC = state.absLat - calLat, dLonC = state.absLon - calLon;
+    state.tot = Math.sqrt(dLatC * dLatC + dLonC * dLonC);
+
     render();
-    paintSrc();
   }
 
-  // 数据源指示：真机排障时能一眼看出走的是加速度计（重力模式）还是欧拉角（方向模式）
-  var lastSrcPaint = 0;
-  function paintSrc(){
+  // 数据源与断流指示（每秒一次，独立于传感器帧率）
+  // 改前挂在 update() 里，帧率掉到 0 时状态栏就永远停在旧值，看不出「传感器已断，读数已冻结」。
+  function statusTick(){
+    if (!state.running) return;
     var now = Date.now();
-    if (now - lastSrcPaint < 1000) return;
-    lastSrcPaint = now;
-    if (!state.running || state.mode === 'none') return;
-    var t = state.mode === 'motion' ? '重力模式' : '方向模式';
+    var idle = now - lastEvent;
+    if (state.paused) return;                 // 后台挂起时不显示断流，避免切回前台瞬间闪烁
+    if (idle > 3000){
+      stopLong();
+      if (elStatus.textContent !== '传感器断流'){
+        elStatus.className = 'status err';
+        elStatus.textContent = '传感器断流';
+      }
+      return;
+    }
+    if (idle > 1200) return;                  // 短暂静默（静止时的采样优化）不刷，避免来回跳
+    var t = state.mode === 'motion' ? '重力模式'
+          : (state.mode === 'orientation' ? '方向模式' : '等待传感器');
     if (elStatus.textContent !== t){
       elStatus.className = 'status on';
       elStatus.textContent = t;
     }
   }
+  setInterval(statusTick, 1000);
 
   /* -------------------- 事件 -------------------- */
   // 通道优先级：devicemotion（加速度计，无欧拉角奇点）优先，deviceorientation 只做兜底。
@@ -707,6 +850,17 @@
 
   function onOrientation(e){
     if (e.beta === null && e.gamma === null) return;
+    // 无论是否让位给加速度计，都先把俯仰记下来：
+    // (1) 竖立开局时加速度计判不出符号，需要它做交叉校验；
+    // (2) 方向模式兜底公式本身要用 alpha/beta/gamma。
+    state.lastBeta = (typeof e.beta === 'number') ? e.beta : null;
+    var raw = state.rawUnit;
+    // 只在加速度计自己还判不出符号时补判（gzSign===0），不覆盖已锁定的结论，
+    // 否则两个通道姿态不同步时会把正确符号改坏。
+    if (raw && gzSign === 0 && Math.abs(raw.z) < GZ_HYST){
+      var s = signFromPitch(raw.y);
+      if (s) gzSign = s;
+    }
     if (Date.now() - lastMotion < MOTION_HOLD) return;   // 加速度计有数据 → 让位
     state.mode = 'orientation';
     lastEvent = Date.now();
@@ -745,15 +899,11 @@
     elHint.textContent = '已启用：到达限位 70%（接近 ' + (APPROACH*0.7).toFixed(1) + '° / 离去 ' + (DEPARTURE*0.7).toFixed(1) + '°）起递进式雷达音，越近越急；95% 或超过直接持续长鸣并闪屏。若没听到试听声，请关闭手机侧边静音键并把媒体音量调大';
     setTimeout(function(){
       if (!state.running) return;
+      // 状态栏文案统一由 statusTick 维护，这里只补一句授权/HTTPS 的可操作提示
       if (Date.now() - lastEvent > 2500 && state.mode === 'none'){
-        // 两个通道都没数据
-        elStatus.className = 'status err';
-        elStatus.textContent = '无传感器数据';
         elHint.textContent = '未收到传感器数据：请确认用 HTTPS 打开，且已在系统设置中允许浏览器访问运动与方向';
-      } else {
-        elStatus.textContent = state.mode === 'motion' ? '重力模式' : '方向模式';
       }
-    }, 2000);
+    }, 2500);
     requestWakeLock();
   }
 
@@ -810,22 +960,36 @@
 
   function calibrate(silent){
     if (!silent) autoCalArmed = false;   // 手动校准后不再被自动校准覆盖
-    var p = project(state._lastGrav || {x:0, y:0, z:-1});
-    var upright = p.up < MIN_UP;
-    if (upright && state.hasCal){
-      // 侧立奇点处横向/纵向都不可测：不把随机值写进基准，只保持现有基准（显示 0）
-      state.holdLat = state.calLat;
+    var grav = state._lastGrav || { x:0, y:0, z:-1 };
+    var pp = project(grav);
+    var upright = state.nSample > 0 ? state.upright : (pp.up < UPRIGHT_UP);
+    var tiltNow = Math.sqrt(pp.lat * pp.lat + pp.lon * pp.lon);   // 相对「水平放置、车头朝前」的偏离量
+
+    if (upright){
+      // 侧立奇点：横向/纵向都不可测。首次校准也必须落 hasCal（否则后续读到 hasCal=false 会走未校准路径），
+      // 但零点固定为 0 —— 绝不把侧立时的随机角度当成基准写进去。
+      if (!state.hasCal){ state.calLat = 0; state.calLon = 0; }
+      // 已有基准则原样保留
+    } else if (state.nSample > 0){
+      // 用平滑后的绝对角做基准：单帧值含噪声，直接写进基准会形成恒定零点偏移
+      state.calLat = state.absLat;
+      state.calLon = state.absLon;
     } else {
-      state.calLat = p.lat;
-      state.calLon = p.lon;
-      state.holdLat = p.lat;
+      // 还没收到任何有效帧：用当前重力反算一次，并同步平滑状态，避免首帧跳变
+      state.calLat = pp.lat; state.calLon = pp.lon;
+      state.absLat = pp.lat; state.absLon = pp.lon;
     }
     state.hasCal = true;
+
     if (!silent){
       vibrate(20);
-      elHint.textContent = upright
-        ? '已校准：手机处于侧立姿态，横向/纵向此时不可测，转回平放或竖立后可再校一次'
-        : '已校准：当前姿态记为 0.00°，可点「重置」清除';
+      if (upright){
+        elHint.textContent = '已校准：手机处于侧立姿态，横向/纵向此时不可测，已保留原零点；请转回平放或竖立后再校一次';
+      } else {
+        elHint.textContent = tiltNow > 3
+          ? '已校准：当前姿态偏离水平面约 ' + tiltNow.toFixed(1) + '°，已按此姿态记 0.00°。若此时在坡上，零点会被带偏，建议停在水平路面重校'
+          : '已校准：当前姿态记为 0.00°，可点「重置」清除';
+      }
       if (state._lastGrav) update(state._lastGrav);   // 立即刷新为 0.00°
     }
   }
@@ -838,7 +1002,8 @@
     state.calLon = 0;
     vibrate(12);
     elHint.textContent = '校准已重置，读数回到绝对倾角';
-    if (!autoCalArmed && state._lastGrav) update(state._lastGrav);   // 立即按绝对倾角刷新
+    resetLevel();                                                     // 清零报警去抖状态，避免残留档位
+    if (state._lastGrav) update(state._lastGrav);                     // 立即按绝对倾角刷新
   });
 
   $('btnSound').addEventListener('click', function(){
@@ -859,8 +1024,8 @@
     elGauge.classList.add('show-slope');   // 首次点击后盘面出现上坡/下坡框型提示
     vibrate(15);
     elHint.textContent = HEADING === 1
-      ? '当前设定：手机顶部朝向车头，屏幕向上 = 上坡（离去角约束）'
-      : '当前设定：手机顶部朝向车尾，屏幕向上 = 下坡（接近角约束）';
+      ? '当前设定：手机顶部朝向车头，屏幕向上 = 上坡（接近角约束）'
+      : '当前设定：手机顶部朝向车尾，屏幕向上 = 下坡（离去角约束）';
   });
 
   $('btnFull').addEventListener('click', function(){
@@ -878,29 +1043,37 @@
   });
 
   // 记录最近一次重力向量，供校准使用；并做「打开即自动校准置零」
-  var autoCalArmed = true, autoCalTs = 0, autoCalN = 0, autoCalLat = 0, autoCalLon = 0;
+  var autoCalArmed = true, autoCalTs = 0, autoCalN = 0;
+  var autoCalLat = 0, autoCalLon = 0, autoCalTot = 0, autoCalWarned = false;
   var _update = update;
   update = function(grav){
     state._lastGrav = grav;
     _update(grav);
-    if (autoCalArmed){
-      if (!autoCalTs) autoCalTs = Date.now();
-      var pp = project(grav);
-      // 侧立奇点姿态下横向/纵向角不可观测，其 lat 是噪声决定的随机值，绝不能纳入置零基准
-      if (pp.up >= FULL_UP){
-        autoCalLat += pp.lat;
-        autoCalLon += pp.lon;
-        autoCalN++;
-      }
-      // 收满约 0.7 秒、至少 8 帧有效样本后取平均置零，避免首帧抖动与侧立样本污染
-      if (autoCalN >= 8 && Date.now() - autoCalTs >= 700){
-        autoCalArmed = false;
-        state.calLat = autoCalLat / autoCalN;
-        state.calLon = autoCalLon / autoCalN;
-        state.holdLat = state.calLat;
-        state.hasCal = true;
-        elHint.textContent = '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
-      }
+    if (!autoCalArmed) return;
+    if (!autoCalTs) autoCalTs = Date.now();
+    // 只采「姿态可信 + 数据干净」的样本：
+    //   侧立时 lat/lon 是噪声决定的随机值；车身在加速/刹车/过坎时 gravity 向量被污染。
+    // 这两类样本一旦混进平均值，零点就会被带偏好几度，之后所有报警阈值跟着整体偏移。
+    if (!state.upright && state.quality >= 0.6){
+      autoCalLat += state.absLat;
+      autoCalLon += state.absLon;
+      autoCalTot += state.tot;
+      autoCalN++;
+    } else if (autoCalN === 0 && Date.now() - autoCalTs > 15000 && !autoCalWarned){
+      autoCalWarned = true;
+      elHint.textContent = '自动校准未能采集到干净样本（手机姿态不稳或车身在加速），请停车放稳后点「校准置零」';
+    }
+    // 收满约 0.7 秒、至少 8 帧有效样本后取平均置零，避免首帧抖动与坡上/侧立样本污染
+    if (autoCalN >= 8 && Date.now() - autoCalTs >= 700){
+      autoCalArmed = false;
+      state.calLat = autoCalLat / autoCalN;
+      state.calLon = autoCalLon / autoCalN;
+      state.hasCal = true;
+      var avgTot = autoCalTot / autoCalN;
+      elHint.textContent = avgTot > 3
+        ? '已自动校准置零：启动时车身并不水平（偏离约 ' + avgTot.toFixed(1) + '°，可能停在上坡），零点已被带偏。请把车停到平地后点「校准置零」重校'
+        : '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
+      _update(state._lastGrav);   // 让新零点立即生效，不必等下一帧
     }
   };
 
@@ -908,6 +1081,8 @@
   document.addEventListener('visibilitychange', function(){
     if (document.visibilityState === 'visible'){
       requestWakeLock();
+      state.paused = false;
+      resetLevel();            // 后台期间等级判定停摆，回来时清掉残留档位，避免立刻误报
       if (listening){
         window.removeEventListener('deviceorientation', onOrientation, true);
         window.removeEventListener('devicemotion', onMotion, true);
@@ -915,6 +1090,11 @@
         window.addEventListener('devicemotion', onMotion, true);
       }
     } else {
+      // 切到后台/锁屏：必须停长鸣。改前只释放了屏幕常亮，报警音会在后台一直响到用户回前台。
+      state.paused = true;
+      stopLong();
+      beatLast = 0; beatIdx = 0;
+      resetLevel();
       if (state.wakeLock && state.wakeLock.release){
         try{ state.wakeLock.release(); }catch(e){}
         state.wakeLock = null;
@@ -922,15 +1102,34 @@
     }
   });
 
+  // 排障钩子：只读暴露内部状态，便于自动化验证与真机 console 排查（不改变任何行为）
+  window.__levelDbg = function(){
+    var g = grade(relPitch());
+    return {
+      lat: state.lat, lon: state.lon, tot: state.tot,
+      upright: state.upright, quality: state.quality, mode: state.mode,
+      paused: state.paused, hasCal: state.hasCal, nSample: state.nSample,
+      gzSign: gzSign, longOn: longOn, level: levelSql,
+      lim: g.lim, which: g.which, ratio: g.ratio,
+      cls: document.body.className,
+      hitUp: elLimUp.classList.contains('hit'),
+      hitDown: elLimDown.classList.contains('hit'),
+      tagApp: elTagApp.classList.contains('on'),
+      tagDep: elTagDep.classList.contains('on'),
+      frozenLat: elLat.classList.contains('frozen'),
+      frozenLon: elLon.classList.contains('frozen')
+    };
+  };
+
   // 首次渲染
   elGauge.classList.add('show-slope');   // 默认上坡模式，直接显示上坡/下坡框型提示
   layoutLimits();
   window.addEventListener('resize', layoutLimits);
   window.addEventListener('orientationchange', function(){ setTimeout(layoutLimits, 120); });
   render();
-  elLat.innerHTML = '--<em>°</em>';
-  elLon.innerHTML = '--<em>°</em>';
-  elTot.innerHTML = '--<em>°</em>';
+  setVal(elLat, '--');
+  setVal(elLon, '--');
+  setVal(elTot, '--');
   elGv.textContent = '--';
 })();
 </script>
