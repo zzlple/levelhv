@@ -256,6 +256,7 @@
     absLat:0,             // 平滑后的横向绝对值
     goodLat:0,            // 最近一次「可信姿态」下的横向角
     upright:false,        // 手机接近竖直：横向角不可测
+    trusted:false,        // 横向角当前是否可信（双阈值迟滞状态）
     smooth:{x:0,y:0}
   };
 
@@ -265,6 +266,10 @@
   // 实测 |sz|=0.42（屏幕仰角 65°）时 1/|sz|≈2.4 倍放大已肉眼可见抖动，故门限收紧到 0.60（仰角约 53°），
   // 只有明确平放/微倾的车载姿态才采信横向角。
   var UPRIGHT_SZ = 0.60;
+  // 可信/不可测切换用双阈值迟滞：否则 |sz| 恰好落在门限上（仰角≈53°）时会因噪声来回切换，
+  // 气泡在「失真读数」与「归零」之间反复跳动，观感同样是左右漂。
+  var SZ_TRUST_ON  = 0.70;  // |sz| 高于此值才恢复采信横向角
+  var SZ_TRUST_OFF = 0.52;  // |sz| 低于此值判定横向不可测
   var WARN_DEG  = 3.0;      // 警示阈值
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
 
@@ -647,22 +652,19 @@
 
   function update(grav){
     var p = project(grav);
-    var trust = Math.abs(p.sz) >= UPRIGHT_SZ;   // 横向角是否可信（屏幕仰角 <53°）
-    state.upright = !trust;
+    var asz = Math.abs(p.sz);
+    // 可信度权重 0~1：|sz| 越大，横向角 atan2(sx,-sz) 越可信。
+    // 0.52~0.70 之间线性过渡（仰角约 46°~59°），而不是二值门限——
+    // 二值门限在临界角度会被噪声反复跨过，气泡在「失真读数」与「归零」间来回跳，看起来同样是左右漂。
+    var w = (asz - SZ_TRUST_OFF) / (SZ_TRUST_ON - SZ_TRUST_OFF);
+    w = w < 0 ? 0 : (w > 1 ? 1 : w);
+    state.upright = w < 0.5;          // 超过约 51° 即视为横向不可测：置灰 + 暂停通过角报警
     state.absLon = p.lon;
-    if (trust){
-      // 可信姿态：横向角可直接采信。轻微低通压噪声（车载静置时 ±0.05g 抖动会被放大成 ±3° 视觉抖动），
-      // 但差值大（真实倾斜）时直通，保证响应速度；同时记录回退基准
-      var dLat = p.lat - state.absLat;
-      state.absLat = Math.abs(dLat) > 2.5 ? p.lat : state.absLat + dLat * 0.22;
-      state.goodLat = p.lat;
-    } else {
-      // 横向不可测：读数无物理意义，平滑归零让气泡回中。
-      // 不能「冻结最后一帧」也不能「保持最近可信值」——两者都会把进入竖立瞬间被 1/|sz| 放大的偏值（常见 ±3~10°）
-      // 凝固在画面上，表现就是圆球突然向左/向右漂走并停住。
-      state.absLat += (0 - state.absLat) * 0.2;
-      if (Math.abs(state.absLat) < 0.05) state.absLat = 0;
-    }
+    var targetLat = p.lat * w;        // 竖立附近直接把失真读数按权重压掉（权重 0 时即归零回中）
+    var dLat = targetLat - state.absLat;
+    // 大幅真实倾斜直通保持响应速度；小变化低通抑制手抖噪声
+    state.absLat = Math.abs(dLat) > 2.5 ? targetLat : state.absLat + dLat * 0.22;
+    if (Math.abs(state.absLat) < 0.05) state.absLat = 0;
     state.holdLat = state.absLat;
     // 竖立时横向强制为 0（不再扣校准零点，否则会显示 -calLat 而偏在一边）
     state.lat = state.upright ? 0 : state.absLat - (state.hasCal ? state.calLat : 0);
