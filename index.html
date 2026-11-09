@@ -80,6 +80,8 @@
   .card .v em{font-size:.42em;font-weight:600;font-style:normal;color:var(--dim);margin-left:3px}
   .card.total{grid-column:1 / -1}
   .card.total .v{font-size:clamp(22px,6vh,42px)}
+  /* 竖立姿态下横向角不可测，读数置灰表示「保持值」 */
+  .card .v.frozen{opacity:.38}
   body.ok .card .v{color:var(--ok)}
   body.warn .card .v{color:var(--warn)}
   body.bad .card .v{color:var(--bad)}
@@ -250,10 +252,17 @@
     wakeLock:null,
     lastVibe:0,
     inLevel:false,
+    holdLat:0,            // 竖立时冻结的横向读数
+    upright:false,        // 手机接近竖直：横向角不可测
     smooth:{x:0,y:0}
   };
 
   var LEVEL_DEG = 0.5;      // 水平阈值
+  // 竖立判定：屏幕法线方向的重力分量 |sz| 小于该值（约手机偏离竖直 <10°，即屏幕仰角 >80°）。
+  // 此时重力几乎落在屏幕平面内，横向角 atan2(sx,-sz) 分母趋零，属于几何奇点：读数只会跟着噪声在 ±90° 之间乱跳。
+  var UPRIGHT_SZ = 0.17;
+  // 近竖直过渡区（屏幕仰角约 >65°）：横向角仍可测但噪声被显著放大，只做重平滑不冻结
+  var NEAR_UPRIGHT_SZ = 0.42;
   var WARN_DEG  = 3.0;      // 警示阈值
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
 
@@ -312,7 +321,8 @@
     if (!isFinite(lat)) lat = 0;
     if (!isFinite(lon)) lon = 0;
     if (!isFinite(tot)) tot = 0;
-    return { lat:lat, lon:lon, tot:tot };
+    // sz 一并返回：|sz| 越小说明手机越接近竖直，横向角 atan2(sx,-sz) 的分母越接近 0，数值越不可信
+    return { lat:lat, lon:lon, tot:tot, sz:sz };
   }
 
   /* -------------------- 渲染 -------------------- */
@@ -580,6 +590,7 @@
     var lat = state.lat, lon = state.lon, tot = state.tot;
 
     elLat.innerHTML = fmt(lat) + '<em>°</em>';
+    elLat.classList.toggle('frozen', state.upright);   // 竖立时横向不可测：读数置灰，表示保持值
     elLon.innerHTML = fmt(lon) + '<em>°</em>';
     elTot.innerHTML = fmt(tot) + '<em>°</em>';
     // 圆球只显示纵向数值（车头/车尾俯仰）
@@ -604,7 +615,10 @@
     elNeedle.style.transform = 'translateX(-1px) rotate(' + ang.toFixed(1) + 'deg)';
 
     // 接近角 / 离去角 分级：按相对倾角占限位的比例，70% 起预警、95% 起长鸣
-    var j = grade(relPitch());
+    // 竖立姿态不是车载安装姿态（纵向会逼近 ±90°），此时不做通过角判定，避免拿起手机就长鸣
+    var j = state.upright
+      ? { level:'safe', which: relPitch() >= 0 ? 'dep' : 'app', ratio:0, lim:0 }
+      : grade(relPitch());
     var alarm = j.level === 'alarm';
     setLevelClass(j, tot);
     document.body.classList.toggle('alarm', alarm);
@@ -626,9 +640,20 @@
 
   function update(grav){
     var p = project(grav);
-    state.absLat = p.lat;
+    var upright = Math.abs(p.sz) < UPRIGHT_SZ;
+    state.upright = upright;
     state.absLon = p.lon;
-    state.lat = p.lat - (state.hasCal ? state.calLat : 0);
+    if (upright){
+      // 竖立时横向角在几何上不可观测（分母 sz→0），冻结在最后一次有效值，避免 ±90° 乱跳
+      state.absLat = state.holdLat;
+    } else {
+      // 屏幕仰角较高（|sz| 小）时横向角对噪声的放大倍数约 1/|sz|，此时重心平滑抑制抖动；
+      // 车载平放 |sz|≈1 时 alpha=1，完全不做平滑，保持原响应速度
+      var a = Math.abs(p.sz) < NEAR_UPRIGHT_SZ ? 0.25 : 1;
+      state.absLat = a === 1 ? p.lat : state.holdLat + (p.lat - state.holdLat) * a;
+      state.holdLat = state.absLat;
+    }
+    state.lat = state.absLat - (state.hasCal ? state.calLat : 0);
     state.lon = p.lon - (state.hasCal ? state.calLon : 0);
     var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
     state.tot = t;
@@ -737,12 +762,22 @@
   function calibrate(silent){
     if (!silent) autoCalArmed = false;   // 手动校准后不再被自动校准覆盖
     var p = project(state._lastGrav || {x:0, y:0, z:-1});
-    state.calLat = p.lat;
-    state.calLon = p.lon;
+    var upright = Math.abs(p.sz) < UPRIGHT_SZ;
+    if (upright && state.hasCal){
+      // 竖立时横向不可测：不把随机值写进横向基准，只把冻结读数对齐现有基准（显示 0）
+      state.calLon = p.lon;
+      state.holdLat = state.calLat;
+    } else {
+      state.calLat = p.lat;
+      state.calLon = p.lon;
+      state.holdLat = p.lat;
+    }
     state.hasCal = true;
     if (!silent){
       vibrate(20);
-      elHint.textContent = '已校准：当前姿态记为 0.00°，可点「重置」清除';
+      elHint.textContent = upright
+        ? '已校准：手机接近竖直，横向角此时不可测（读数已冻结），平放后可再校一次'
+        : '已校准：当前姿态记为 0.00°，可点「重置」清除';
       if (state._lastGrav) update(state._lastGrav);   // 立即刷新为 0.00°
     }
   }
@@ -803,14 +838,18 @@
     if (autoCalArmed){
       if (!autoCalTs) autoCalTs = Date.now();
       var pp = project(grav);
-      autoCalLat += pp.lat;
-      autoCalLon += pp.lon;
-      autoCalN++;
-      // 收满约 0.7 秒、至少 8 帧样本后取平均置零，避免首帧抖动
+      // 竖立姿态下横向角不可观测，其 lat 是噪声决定的随机值，绝不能纳入置零基准，否则后续横向读数整体偏移
+      if (Math.abs(pp.sz) >= UPRIGHT_SZ){
+        autoCalLat += pp.lat;
+        autoCalLon += pp.lon;
+        autoCalN++;
+      }
+      // 收满约 0.7 秒、至少 8 帧有效样本后取平均置零，避免首帧抖动与竖立样本污染
       if (autoCalN >= 8 && Date.now() - autoCalTs >= 700){
         autoCalArmed = false;
         state.calLat = autoCalLat / autoCalN;
         state.calLon = autoCalLon / autoCalN;
+        state.holdLat = state.calLat;
         state.hasCal = true;
         elHint.textContent = '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
       }
