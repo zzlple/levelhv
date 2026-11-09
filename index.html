@@ -9,8 +9,6 @@
 <meta name="apple-mobile-web-app-title" content="水平仪">
 <meta name="theme-color" content="#06080b">
 <title>水平仪 · Level</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2306080b'/%3E%3Ccircle cx='32' cy='32' r='24' fill='none' stroke='%2300dcaa' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%2300ebd4'/%3E%3C/svg%3E">
-<link rel="apple-touch-icon" href="icon-180.png">
 <style>
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   :root{
@@ -82,8 +80,6 @@
   .card .v em{font-size:.42em;font-weight:600;font-style:normal;color:var(--dim);margin-left:3px}
   .card.total{grid-column:1 / -1}
   .card.total .v{font-size:clamp(22px,6vh,42px)}
-  /* 侧立奇点下横向角不可测，读数置灰表示「保持值」 */
-  .card .v.frozen{opacity:.38}
   body.ok .card .v{color:var(--ok)}
   body.warn .card .v{color:var(--warn)}
   body.bad .card .v{color:var(--bad)}
@@ -171,24 +167,6 @@
     .gauge-wrap{width:min(46vh,74vw,320px);height:min(46vh,74vw,320px)}
     .readouts{max-width:440px}
   }
-  /* 顶部拦截横幅：坡上开机自动校准 / 坡上手动校准 后强制提示（报警在此期间暂停） */
-  #banner{display:none;margin:0 0 10px;padding:10px 12px;border-radius:12px;
-    border:1px solid rgba(255,140,60,.55);background:linear-gradient(180deg,rgba(255,120,40,.20),rgba(255,60,60,.10));
-    color:#ffd9b8;font-size:12px;line-height:1.6;letter-spacing:.02em}
-  #banner.show{display:block;animation:bannerPulse 1.7s ease-in-out infinite}
-  @keyframes bannerPulse{0%,100%{border-color:rgba(255,140,60,.45)}50%{border-color:rgba(255,90,60,.95)}}
-  #banner b{color:#ff9455}
-  #banner .acts{display:flex;gap:8px;margin-top:9px}
-  #banner .acts button{flex:1 1 0;min-height:36px;padding:7px 10px;font-size:12px;border-radius:9px}
-
-  /* 坡度线说明行 */
-  .lim-tip{margin-top:6px;font-size:9.5px;line-height:1.5;color:#7d8b9a;letter-spacing:.02em}
-
-  /* 纵向读数「测量暂停」角标：数值仍显示，但明确标注不参与报警 */
-  .v.paused{color:#ffb347}
-  .v.paused::after{content:"测量暂停";font-size:9px;font-style:normal;margin-left:6px;padding:1px 5px;border-radius:5px;
-    background:rgba(255,179,71,.16);border:1px solid rgba(255,179,71,.5);vertical-align:middle}
-
   @media (max-height:400px){
     .card .k{font-size:10px}
     button{min-height:44px;padding:10px 14px;font-size:13px}
@@ -202,14 +180,6 @@
     <div class="brand">水平仪 <small>LEVEL · 免签名网页版</small></div>
     <div class="status" id="status">待授权</div>
   </header>
-
-  <div id="banner">
-    <span id="bannerTxt"></span>
-    <div class="acts">
-      <button class="primary" id="btnBannerCal">平路重新校准</button>
-      <button id="btnBannerOk">仍然使用</button>
-    </div>
-  </div>
 
   <main>
     <div class="gauge-wrap">
@@ -236,7 +206,6 @@
           <span class="lim-tag" id="tagApp">接近 17°</span>
           <span class="lim-tag" id="tagDep">离去 19°</span>
         </div>
-        <div class="lim-tip" id="limTip">坡度预警线 · 对应接近角 / 离去角余量参考</div>
       </div>
       <div class="card total"><div class="k">合成倾角 TOTAL</div><div class="v" id="vTot">--<em>°</em></div></div>
     </div>
@@ -249,7 +218,7 @@
     <button class="ghost" id="btnFlip">↕ 车头↑</button>
     <button class="ghost" id="btnFull">全屏</button>
   </footer>
-  <div class="hint" id="hint">手机<b>平放</b>在车上、或<b>装在手机支架上（竖立、略后仰）都可以</b>：车停水平路面时点「校准置零」（或等自动校准），把当前姿态记为 0.00°，之后读到的就是纯坡度——支架那 15-30° 的安装倾角会被自动扣掉，不用特意取下来平放。默认上坡模式。<b>两条线是坡度预警线</b>：上坡 17°（≈31% 坡）对应接近角 18.1°、下坡 19°（≈34% 坡）对应离去角 20.3°，各自留出前杠与排气管余量 —— <b>它只是坡度余量参考，不等于「能过 / 过不去」</b>（坑洼、载重、打滑都会让实际通过性更差，下坡还要看坡底是否有平顺过渡）。坡度到线的 70% 起雷达式递进「嘀嘀」预警、95% 或超过直接长鸣；车身持续加速或刹车时会自动暂停报警，避免把加速误当坡道</div>
+  <div class="hint" id="hint">启用后自动校准置零（当前姿态记为 0.00°），默认上坡模式；荣放 20 款后保守限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留出前杠与排气管余量），超限「嘀嘀嘀」报警</div>
 </div>
 
 <div id="gate">
@@ -271,71 +240,22 @@
   var elUpTag=$('limUpTag'), elDownTag=$('limDownTag');
   var elTagApp=$('tagApp'), elTagDep=$('tagDep');
   var elStatus=$('status'), elHint=$('hint'), gate=$('gate');
-  var elBanner=$('banner'), elBannerTxt=$('bannerTxt'), elLimTip=$('limTip');
 
   var state = {
     running:false,
     mode:'none',          // 'orientation' | 'motion' | 'none'
-    paused:false,         // 后台挂起：暂停报警判定与长鸣
     lat:0, lon:0, tot:0,
     calLat:0, calLon:0,
     hasCal:false,
     wakeLock:null,
+    lastVibe:0,
     inLevel:false,
-    absLat:0,             // 平滑后的横向（相对设备）角，不受侧立影响
-    absLon:0,             // 平滑后的纵向（相对设备）角，不受侧立影响
-    quality:1,            // 数据可信度 0~1：由加速度模长偏离 1g 的程度给出，刹车/颠簸时降低
-    upright:false,        // 手机侧立（up≈0）：横向/纵向角不可测
-    rawUnit:null,         // 最近一帧未做符号翻转的加速度单位向量（供欧拉角交叉校验符号）
-    lastBeta:null,        // 最近一次欧拉角俯仰（度），用于交叉校验重力符号约定
-    lastMag:0,            // 最近一帧加速度模长（原始单位，g 或 m/s²）
-    nSample:0,            // 已接收的有效帧数
-    _lastGrav:null,       // 最近一次重力向量，供校准复用
-    aDev:0,               // 最近一帧加速度模长偏离 1g 的比例（含线性加速度）
-    dynSince:0,           // 动态加速度首次超限时刻
-    dynClear:0,           // 动态加速度回落到正常之后持续恢复计时的起点
-    measPaused:false,     // 测量暂停：车身持续加速/刹车，纵向角真假难辨，此时冻结报警输出
-    pausedAt:0,           // 本次暂停起始时刻（fail-safe 超时用）
-    noPauseUntil:0,       // 冷静期截止：fail-safe 强制恢复后，短时间内不再被同一判据锁回去
-    flatSince:0,          // 坡上校准时，检测到车身回到水平路面的起始时刻
-    lowConf:false,        // 暂停超时被强制恢复 → 读数低置信（如实提示，不静默）
-    linMag:null,          // 最近一帧线性加速度模长（g），来自 e.acceleration
-    linTs:0,              // 线性加速度时间戳
-    linSince:0,           // 线性加速度首次超限时刻
-    linMagNow:null,       // 本帧生效值（超时未更新则为 null）
-    calSuspect:false,     // 校准疑似在坡上完成，零点被坡度污染 → 报警暂停直到用户重校或明确忽略
-    susDeg:0,             // 疑似坡度污染量（度）
-    pauseWhy:'',          // 测量暂停的原因：'accel'=加速度模长超限 / 'cross'=姿态交叉校验超差
-    oriPitch:null,        // deviceorientation 的 beta（度），由陀螺融合得到，短期不受线性加速度污染
-    oriPitchS:0,          // 上者的一阶平滑
-    oriTs:0,              // 上者最后更新时间
-    oriBadSince:0,        // 交叉校验超差起始时刻
-    oriDev:null,          // 最近一次交叉校验偏差（度），null=无方向通道
     smooth:{x:0,y:0}
   };
 
   var LEVEL_DEG = 0.5;      // 水平阈值
-  // 侧立奇点门限：重力在主竖直轴上的分量（up）低于 UPRIGHT_UP 时，手机是「侧立」（长边竖直、屏幕朝侧面），
-  // 横向/纵向角在数学上都无意义，此时才需要淡出归零；平放与竖立两种正常姿态的 up 都接近 1，可正常测量。
-  var MIN_UP  = 0.25;
-  var FULL_UP = 0.40;
-  var UPRIGHT_UP = (MIN_UP + FULL_UP) / 2;   // 统一的「侧立」判定线，全页只用这一个门限
-  var mountMode = '--';                      // 解算族：flat=平放 / stand=竖立（装车支架），仅用于状态显示与排障
+  var WARN_DEG  = 3.0;      // 警示阈值
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
-
-  /* ---- 滤波与报警去抖 ---- */
-  var LPF_LAT = 0.22;       // 横向低通系数（60Hz 下约 0.1s 时间常数）
-  var LPF_LON = 0.20;       // 纵向低通系数，纵向参与报警，必须平滑
-  var LPF_MIN = 0.05;       // 数据质量差时的最低响应系数
-  var JUMP_DEG = 2.5;       // 干净数据下超过该变化量直接跟随（保证响应速度）
-  var Q_TOL = 0.10;         // 模长偏离 1g 的比例容忍度：超过即认为叠加了车身加速度
-  var Q_FULL = 0.30;        // 偏离达到该比例时数据完全不可信
-  // 报警等级去抖：30ms 定时器读到的是瞬时值，单帧噪声（过坎、手磕）就可能把 ratio 顶过 95% 而立刻长鸣。
-  // 升档也要确认帧，只是确认更快：warn 3 帧≈90ms、alarm 4 帧≈120ms、回落 safe 6 帧≈180ms，
-  // 既不会听到假长鸣，也不会因为一帧回落就把长鸣掐断造成「打嗝」。
-  var HOLD_WARN  = 3;       // 进入预警需连续帧数
-  var HOLD_ALARM = 4;       // 进入长鸣需连续帧数
-  var HOLD_SAFE  = 6;       // 退出报警需连续帧数
 
   /* ---- 车辆通过性限位 ---- */
   // 荣放 RAV4（2020 款及以后，XA50 平台）官方：接近角 18.1° / 离去角 20.3°
@@ -343,93 +263,37 @@
   var APPROACH  = 17;       // 接近角（保守）
   var DEPARTURE = 19;       // 离去角（保守）
   var VIEW_RATIO = 0.86;    // 限位线所在半径比例：气泡到达线 = 已达保守极限
-  var LATERAL_REF = 30;     // 气泡横向满偏参考角（横向不做限位判定，仅作方向指示）
+  var PRE_ALERT = 3;        // 提前预警距离（度）
   var HEADING = 1;          // 1 = 手机顶部朝车头；-1 = 顶部朝车尾
 
-  /* ---- 深度整改常量 ---- */
-  // 车身动态加速度（线性加速度）判定：accelerationIncludingGravity 的模长一旦偏离 1g，
-  // 说明此刻的重力向量里混进了车的加速/刹车，纵向「俯仰」既可能是坡、也可能是加速度，无法区分。
-  var DYN_TOL    = 0.15;    // 模长偏离 1g 超过 15%（≈0.15g，约 1.5 m/s²）算持续加速/刹车
-  var DYN_ON_MS  = 400;     // 连续超限 0.6s 才冻结测量：过坎、单帧尖峰不该触发
-  var DYN_OFF_MS = 400;     // 回落到 7.5% 以下并持续 0.4s 才恢复测量，避免临界抖动来回切
-  // 【deep11】主判据改为线性加速度 e.acceleration（iOS 原生给出、重力已被扣除）：
-  // 0.3g 刹车时它能读到 ≈3 m/s²，而重力模长只偏离 4%（模长判据看不见），
-  // 但这点线性加速度足以把纵向角顶偏 16° 造成假报警 —— 主判据必须直接测它。
-  var LIN_TOL    = 0.10;    // 线性加速度超过 0.10g（≈1 m/s²）算车身在加速
-  var LIN_ON_MS  = 250;     // 连续 0.25s 才冻结：减速带单帧尖峰不触发
-  var LIN_OFF_MS = 300;     // 回落到 0.05g 并持续 0.3s 才恢复
-  // fail-safe：任何暂停最多持续这么久，超时强制恢复并降级为「低置信」。
-  // 报警不响比误报更危险，绝不允许某个判据异常把报警永久静默。
-  var MAX_PAUSE_MS = 2000;
-  var COOLDOWN_MS  = 1500;   // 强制恢复后的冷静期：期间不再因加速度判据暂停
-  // 坡上开机拦截：校准时的「偏离量」超过该值 → 判定疑似停在坡上，报警默认不启用
-  var SUSPECT_DEG = 5;
-
   /* -------------------- 姿态解算 -------------------- */
-  // 屏幕方向角（0/90/180/270），语义统一为「屏幕内容顺时针旋转角」，与 screen.orientation.angle 一致
+  // 屏幕方向角（0/90/180/270），统一取正值
   function screenAngle(){
     if (screen && screen.orientation && typeof screen.orientation.angle === 'number'){
       return ((screen.orientation.angle % 360) + 360) % 360;
     }
-    // 回退通道：window.orientation 是旧规范，符号与 angle 相反（-90 对应 angle 90），
-    // 直接取正会把横屏时的屏幕坐标系整体镜像，横向/纵向角符号翻转，必须取反后再归一。
     if (typeof window.orientation === 'number'){
-      var o = window.orientation;
-      return ((((360 - o) % 360) + 360) % 360);
+      return ((window.orientation % 360) + 360) % 360;
     }
     return 0;
   }
 
-  // 由 alpha/beta/gamma 求设备坐标系下的“重力朝下”单位向量（兜底通道）
-  // 必须把 alpha 一起算进去：竖立持握时 beta≈90°，横滚只体现在 alpha 上，
-  // 旧实现只吃 beta/gamma，竖立时 x 恒等于 sin(gamma)*cos(90°)=0，横向永远不动。
+  // 由 alpha/beta/gamma 求设备坐标系下的“重力朝下”单位向量
   function gravityFromOrientation(alpha, beta, gamma){
-    var a = alpha * Math.PI/180;
     var b = beta  * Math.PI/180;
     var g = gamma * Math.PI/180;
-    var sa = Math.sin(a), ca = Math.cos(a);
-    var sg = Math.sin(g), cg = Math.cos(g);
-    var sb = Math.sin(b), cb = Math.cos(b);
     return {
-      x: -(ca*sg + sa*sb*cg),
-      y: -sa*sg + ca*sb*cg,
-      z: -cb*cg
+      x:  Math.sin(g) * Math.cos(b),
+      y: -Math.sin(b),
+      z: -Math.cos(g) * Math.cos(b)
     };
   }
 
   // 由 accelerationIncludingGravity 求“重力朝下”单位向量（自适应各平台符号）
-  // 关键：z 轴符号用「迟滞锁定」，只在 |gz| 足够大（手机明显非竖立）时判定一次。
-  // 若每帧按瞬时 gz 判符号，竖立时 gz≈0 会被噪声来回跨过 0，导致整向量正负翻转，横向角瞬间跳 ±180°。
-  var gzSign = 0;            // 0=未判定（不翻转）；1=平台已按「重力朝下为负」给出；-1=需要翻转
-  var GZ_HYST = 0.25;
-
-  // 用欧拉角俯仰对「重力符号约定」做交叉校验，专治竖立开局：
-  // 手机竖立时加速度计 gz≈0，|gz| 判据永远不成立，gzSign 会一直锁在 0（不翻转），
-  // 于是整个重力向量符号反了，横向角正负翻转、Android 与 iOS 表现不一致。
-  // 顶部朝上（beta>0）时重力在设备 y 轴上必为负，据此可独立判定平台符号。
-  function signFromPitch(gy){
-    var b = state.lastBeta;
-    if (b === null || !isFinite(b)) return 0;
-    var sb = Math.sin(b * Math.PI / 180);
-    if (Math.abs(sb) < 0.5) return 0;        // 接近平放：俯仰没有判别力，交给 |gz| 判据
-    if (Math.abs(gy) < 0.4) return 0;        // y 轴分量太小，同样不可判
-    return (gy * -sb) > 0 ? 1 : -1;
-  }
-
   function gravityFromMotion(ax, ay, az){
     var m = Math.sqrt(ax*ax + ay*ay + az*az) || 1;
     var gx = ax/m, gy = ay/m, gz = az/m;
-    state.rawUnit = { x:gx, y:gy, z:gz };     // 原始符号留存，供欧拉角交叉校验
-    state.lastMag = m;                        // 原始模长（g 或 m/s²），供数据质量评估
-    if (Math.abs(gz) >= GZ_HYST){
-      var s = gz > 0 ? -1 : 1;
-      // 迟滞：符号已锁定时，只有分量明显更大（≥2 倍门限）才允许改写；
-      // 否则在门限附近会被噪声来回翻转，整向量正负跳变会让横向角瞬间跳 ±180°。
-      if (gzSign === 0 || s === gzSign || Math.abs(gz) >= GZ_HYST * 2){ gzSign = s; }
-    } else if (gzSign === 0){
-      gzSign = signFromPitch(gy);             // 竖立族首帧：借欧拉角俯仰立即锁定，不等平放
-    }
-    if (gzSign < 0){ gx = -gx; gy = -gy; gz = -gz; }
+    if (gz > 0){ gx = -gx; gy = -gy; gz = -gz; }
     return { x:gx, y:gy, z:gz };
   }
 
@@ -441,21 +305,14 @@
     var sy = -grav.x*sn + grav.y*cs;   // 屏幕向上
     var sz =  grav.z;                  // 屏幕向里（平放时为负）
 
-    // 姿态主轴自适应：重力主要落在「屏幕法线(-sz)」上 → 平放族；落在「屏幕上下轴(-sy)」上 → 竖立族。
-    // 主力轴只用来选「纵向角该取哪根轴」，横向角统一用 asin(sx)：它等于真实的左右单轴倾角，
-    // 不随手机前倾/后仰被压缩（atan2(sx,-sz) 在仰角 70° 时会把 8° 侧倾放大成 22°），也彻底避开 sz→0 的奇点。
-    // 纵向：平放取 asin(-sy)，竖立取 asin(-sz)。
-    var useZ = Math.abs(sz) >= Math.abs(sy);
-    var up = Math.abs(useZ ? sz : sy) || 1e-6;                 // 主竖直轴上的重力分量，正常姿态≈1
-    var lat = Math.asin(Math.max(-1, Math.min(1, sx))) * 180/Math.PI;                       // 右侧低为正
-    var lon = Math.asin(Math.max(-1, Math.min(1, useZ ? -sy : -sz))) * 180/Math.PI;          // 顶部抬起为正
+    var denom = Math.sqrt(sx*sx + sz*sz) || 1e-6;
+    var lat = Math.atan2(sx, -sz) * 180/Math.PI;            // 右侧低为正
+    var lon = Math.atan2(-sy, Math.sqrt(sx*sx + sz*sz)) * 180/Math.PI; // 顶部抬起为正
     var tot = Math.acos(Math.max(-1, Math.min(1, -sz))) * 180/Math.PI;
     if (!isFinite(lat)) lat = 0;
     if (!isFinite(lon)) lon = 0;
     if (!isFinite(tot)) tot = 0;
-    // up 一并返回：只有手机侧立时 up→0，此时横向/纵向才不可测，需要归零回中
-    // mount 标明当前解算族：flat=手机大致平放（用屏幕上下轴测坡度）、stand=手机竖立/装车支架（用屏幕法线测坡度）
-    return { lat:lat, lon:lon, tot:tot, up:up, sz:sz, mount: useZ ? 'flat' : 'stand' };
+    return { lat:lat, lon:lon, tot:tot };
   }
 
   /* -------------------- 渲染 -------------------- */
@@ -467,22 +324,16 @@
     return v.toFixed(0);
   }
 
-  // 颜色分级：safe 保持常态（不报警），warn 琥珀提示，alarm 红色闪烁
-  var lastLevelCls = '';
-  function setLevelClass(g, tot){
-    var cls = g.level === 'alarm' ? 'bad' : (g.level === 'warn' ? 'warn' : 'ok');
-    // 侧立奇点姿态下 tot 不代表任何可用姿态，不参与「已水平」判定
-    if (!state.upright && tot <= LEVEL_DEG && !state.inLevel){
+  function setLevelClass(tot){
+    var cls = tot <= LEVEL_DEG ? 'ok' : (tot <= WARN_DEG ? 'warn' : 'bad');
+    if (tot <= LEVEL_DEG && !state.inLevel){
       state.inLevel = true;
       vibrate([12,60,12]);
-    } else if (state.upright || tot > LEVEL_DEG * 1.6){
+    } else if (tot > LEVEL_DEG * 1.6){
       state.inLevel = false;
     }
-    if (cls !== lastLevelCls){
-      document.body.classList.remove('ok','warn','bad');
-      document.body.classList.add(cls);
-      lastLevelCls = cls;
-    }
+    document.body.classList.remove('ok','warn','bad');
+    document.body.classList.add(cls);
   }
 
   function vibrate(p){ try{ if (navigator.vibrate) navigator.vibrate(p); }catch(e){} }
@@ -492,24 +343,19 @@
   // iOS 的 WebAudio 会被硬件静音开关静音，故同时准备 <audio> 元素走媒体通道（静音键下仍可发声）
   var SFX = {
     alarm: 'data:audio/wav;base64,UklGRl4RAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YToRAAAAAGABwQIiBIMF5AZFCKYJBwuY8zfy1vB17xTus+xT6/LpkejQGDEakhvzHFQetR8WIXci2CPH2mbZBdil1kTV49OC0iHRwM+hMQIzYzTENSU3hjjnOUg7qTz3wZbANb/UvXO8EruxuVC4EUlyStNLNE2VTvZPV1G3UhhUh6omqcWnZKYDpaKjQaLgoH+f4mFDY6RkBWZlZ8ZoJ2qIa+lstpFVkPSOk40yjNGKcIkPiK6GmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHmuhpqHhYhwiVyKR4syjB2NCY4McSFwNW9Kbl9tdGyIa51qsmk6lyWYEJn7meea0pu9nKmdlJ6BYJVfql6/XdRc6Fv9WhJa2qbFp7Com6mHqnKrXaxJrTSu4VD2TwpPH040TUhMXUtySodJZbdQuDu5J7oSu/276LzUvb++VkBqP38+lD2pPL070jrnOfs48MfbyMbJssqdy4jMdM1fzkrPyi/fLvQtCS0dLDIrRypbKZDXe9hm2VLaPdso3BTd/93q3isgPx9UHmkdfRySG6cavBnQGBvoBuny6d3qyOuz7J/tiu51758PtA7JDd4M8gsHCxwKMAlFCKb4kfl9+mj7U/w//Sr+Ff8=',
-    warn:  'data:audio/wav;base64,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',
-    long:  'data:audio/wav;base64,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'
+    warn:  'data:audio/wav;base64,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'
   };
-  var snd = { alarm:null, warn:null, long:null, alarmOk:undefined, warnOk:undefined, longOk:undefined };
-  var SND_VOL = { alarm:1.0, warn:0.85, long:0.95 };
+  var snd = { alarm:null, warn:null, alarmOk:undefined, warnOk:undefined };
 
   function makeSnd(){
     if (snd.alarm) return;
     try{
       snd.alarm = new Audio(SFX.alarm);
-      snd.alarm.preload = 'auto'; snd.alarm.setAttribute('playsinline',''); snd.alarm.volume = SND_VOL.alarm;
+      snd.alarm.preload = 'auto'; snd.alarm.setAttribute('playsinline',''); snd.alarm.volume = 1.0;
       snd.warn  = new Audio(SFX.warn);
-      snd.warn.preload  = 'auto'; snd.warn.setAttribute('playsinline','');  snd.warn.volume = SND_VOL.warn;
-      snd.long  = new Audio(SFX.long);
-      snd.long.preload  = 'auto'; snd.long.setAttribute('playsinline','');  snd.long.volume = SND_VOL.long;
-      snd.long.loop = true;
+      snd.warn.preload  = 'auto'; snd.warn.setAttribute('playsinline','');  snd.warn.volume = 0.85;
       // iOS 部分版本要求媒体元素挂载到文档中才允许播放：用 1px 透明层挂载，而非 display:none
-      [snd.alarm, snd.warn, snd.long].forEach(function(a){
+      [snd.alarm, snd.warn].forEach(function(a){
         try{
           a.style.cssText = 'position:fixed;left:-4px;bottom:-4px;width:1px;height:1px;opacity:0.01;pointer-events:none';
           (document.body || document.documentElement).appendChild(a);
@@ -535,7 +381,7 @@
     makeSnd();
     var a = snd[kind];
     if (!a) return false;
-    try{ a.volume = SND_VOL[kind] || 0.9; }catch(e){}
+    try{ a.volume = (kind === 'alarm') ? 1.0 : 0.85; }catch(e){}
     try{
       try{ a.pause(); }catch(e){}
       try{ a.currentTime = 0; }catch(e){}
@@ -566,7 +412,7 @@
       if (k.indexOf('Ok') >= 0) return;
       var a = snd[k];
       if (!a || typeof a.play !== 'function') return;
-      var baseVol = SND_VOL[k] || 0.9;
+      var baseVol = (k === 'alarm') ? 1.0 : 0.85;
       try{
         try{ a.volume = 0; }catch(e){}
         try{ a.currentTime = 0; }catch(e){}
@@ -622,564 +468,132 @@
   }
 
   /* -------------------- 接近角 / 离去角 限位 -------------------- */
-  /* -------- 俯仰与限位分级 -------- */
-  // 相对倾角：校准后即为相对基准的俯仰变化；未校准时等同绝对倾角
-  function relPitch(){ return (state.lon || 0) * HEADING; }
+  // 车头俯仰：正 = 车头抬起（后保险杠吃紧，受离去角约束）
+  function headPitch(){ return (state.absLon || 0) * HEADING; }
 
-  // 分级：<70% 限位为安全（静音、不变色）；70%~95% 雷达递进预警；≥95% 直接长鸣
-  var WARN_RATIO  = 0.70;
-  var ALARM_RATIO = 0.95;
-  // 角度 → 坡度百分比（tan）：17° ≈ 30.6% 坡、19° ≈ 34.4% 坡，便于和路牌「xx% 坡」直接对照
-  function slopePct(deg){ return Math.round(Math.tan(deg * Math.PI / 180) * 100); }
-
-  function grade(hp){
-    // 符号对应关系（改前写反，导致上坡一路静音）：
-    //   hp > 0 = 车头方向抬起 = 上坡 → 最先蹭地的是车头前悬 → 受「接近角」约束
-    //   hp < 0 = 车头方向下沉 = 下坡 → 最先蹭地的是车尾后悬 → 受「离去角」约束
-    // 注意语义：这里的 APPROACH / DEPARTURE 只是「坡度预警线」——对应接近角 / 离去角还剩下的余量，
-    // 不是「能过 / 过不去」的判定。真实通过性还取决于坡面坑洼、载重、轮胎打滑、前悬高度等。
-    var lim   = hp >= 0 ? APPROACH : DEPARTURE;
-    var which = hp >= 0 ? 'app' : 'dep';
-    var ratio = Math.abs(hp) / lim;
-    var level = ratio >= ALARM_RATIO ? 'alarm' : (ratio >= WARN_RATIO ? 'warn' : 'safe');
-    return { level: level, which: which, ratio: ratio, lim: lim };
+  function judge(hp){
+    if (hp >=  DEPARTURE)                 return { level:'alarm', which:'dep' };
+    if (hp <= -APPROACH)                  return { level:'alarm', which:'app' };
+    if (hp >=  DEPARTURE - PRE_ALERT)     return { level:'warn',  which:'dep' };
+    if (hp <= -(APPROACH - PRE_ALERT))    return { level:'warn',  which:'app' };
+    return { level:'safe', which:null };
   }
 
-  var gaugeRMax = 300 * MAX_OFFSET;   // 盘面半径缓存：由 layoutLimits 刷新，render 每帧读取而不触发布局计算
   function layoutLimits(){
     var w = elGauge.clientWidth || 300;
     var rMax = w * MAX_OFFSET;
-    gaugeRMax = rMax;
-    // 屏幕上方（气泡往上跑的方向）对应的限位角：
-    //   顶部朝车头(HEADING=1)：屏幕向上 = 车头上坡 = 接近角
-    //   顶部朝车尾(HEADING=-1)：屏幕向上 = 车头下沉 = 下坡 = 离去角
-    var upLimit   = HEADING === 1 ? APPROACH  : DEPARTURE;
-    var downLimit = HEADING === 1 ? DEPARTURE : APPROACH;
+    var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;  // 气泡向上所对应的角
+    var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
     elLimUp.style.top   = 'calc(50% + ' + (-rMax * VIEW_RATIO).toFixed(1) + 'px)';
     elLimDown.style.top = 'calc(50% + ' + ( rMax * VIEW_RATIO).toFixed(1) + 'px)';
-    // 语义正名：这两条线是「坡度预警线」，不是通过性判定。
-    // 17° / 19° 取自接近角 18.1° / 离去角 20.3° 留出前杠与排气管余量，是「坡度上的余量参考」。
-    elUpTag.textContent   = upLimit + '° 坡度线';
-    elDownTag.textContent = downLimit + '° 坡度线';
-    elTagApp.textContent = '坡度线 ' + APPROACH + '°';
-    elTagDep.textContent = '坡度线 ' + DEPARTURE + '°';
-    if (elLimTip){
-      elLimTip.textContent = '坡度预警线：上坡 ' + APPROACH + '°≈' + slopePct(APPROACH) + '% 坡 / 下坡 '
-        + DEPARTURE + '°≈' + slopePct(DEPARTURE) + '% 坡（接近角 / 离去角余量参考，非通过性判定）';
-    }
+    elUpTag.textContent   = upLimit + '° ' + (HEADING === 1 ? '离去角' : '接近角');
+    elDownTag.textContent = downLimit + '° ' + (HEADING === 1 ? '接近角' : '离去角');
+    elTagApp.textContent = '接近 ' + APPROACH + '°';
+    elTagDep.textContent = '离去 ' + DEPARTURE + '°';
     // 盘面框型提示：随车头朝向对调上坡 / 下坡
     elSlopeUp.textContent   = HEADING === 1 ? '上坡' : '下坡';
     elSlopeDown.textContent = HEADING === 1 ? '下坡' : '上坡';
   }
 
-  /* -------- 声光节奏：雷达式递进 + 逼近长鸣 -------- */
-  var beatLast = 0, beatIdx = 0, longOn = false, pauseBeat = 0;
-
-  // 递进预警：越靠近限位，音高越高、间隔越短（像倒车雷达）
-  function warnTick(r){
-    if (audio.muted) return;
-    var freq = 880 + 560 * r;
-    makeSnd();
-    var a = snd.warn;
-    if (!a){ webBeep(freq, 0.09, 0.6 + 0.3 * r); return; }
-    try{
-      try{ a.pause(); }catch(e){}
-      try{ a.currentTime = 0; }catch(e){}
-      try{ a.playbackRate = 0.92 + 0.66 * r; }catch(e){}   // 音高随之抬升
-      a.volume = 0.62 + 0.32 * r;
-      var p = a.play();
-      if (p && p.then){ p.catch(function(){ webBeep(freq, 0.09, 0.7); }); }
-    }catch(e){ webBeep(freq, 0.09, 0.7); }
-  }
-
-  // 逼近／超过限位：长鸣（循环播放媒体通道长音，静音键下也响）
-  function startLong(){
-    if (longOn) return;
-    makeSnd();
-    var a = snd.long;
-    if (!a) return;
-    longOn = true;
-    try{
-      try{ a.pause(); }catch(e){}
-      try{ a.currentTime = 0; }catch(e){}
-      a.loop = true;
-      a.volume = 0.95;
-      try{ a.playbackRate = 1; }catch(e){}
-      var p = a.play();
-      if (p && p.then){ p.catch(function(){ longOn = false; }); }
-    }catch(e){ longOn = false; }
-  }
-
-  function stopLong(){
-    if (!longOn) return;
-    longOn = false;
-    try{ if (snd.long){ snd.long.pause(); snd.long.currentTime = 0; } }catch(e){}
-  }
-
-  /* -------- 报警等级去抖：必须连续 N 拍稳定在同一档才切换（帧数常量见 HOLD_*） -------- */
-  var levelSql = 'safe', levelCnt = 0;
-  function debounceLevel(g, allow){
-    var target = allow ? g.level : 'safe';
-    if (target === levelSql){ levelCnt = 0; return levelSql; }
-    levelCnt++;
-    var need = target === 'safe' ? HOLD_SAFE : (target === 'alarm' ? HOLD_ALARM : HOLD_WARN);
-    if (levelCnt >= need){ levelSql = target; levelCnt = 0; }
-    return levelSql;
-  }
-  function resetLevel(){ levelSql = 'safe'; levelCnt = 0; }
-
+  // 嘀嘀嘀：超限 = 三连急响后停顿；预警 = 慢速单响
+  var beatLast = 0, beatIdx = 0;
   setInterval(function(){
-    // 后台 / 未启用 / 暂停时不发声；暂停必须在进入后台那一刻就把长鸣掐掉，否则会一直响到切回前台
-    if (!state.running || state.paused){
-      stopLong(); beatLast = 0; beatIdx = 0; resetLevel();
-      return;
-    }
-    // 车身持续加速/刹车 → 重力向量被线性加速度污染，纵向角既可能是坡也可能是加速度，无法区分。
-    // 此时冻结报警输出（不递进、不长鸣），只保留状态栏与「测量暂停」角标，避免把加速喊成坡道报警。
-    if (state.measPaused){
-      stopLong(); beatLast = 0; beatIdx = 0; resetLevel();
-      if (Date.now() - pauseBeat >= 1600){
-        pauseBeat = Date.now();
-        if (!audio.muted) beep(520, 0.045, 0.22);
-        vibrate(8);
-      }
-      return;
-    }
-    // 【deep11c】原「校准疑似在坡上 → 报警一律不启用」已删除。它是「坡上/车库开机后彻底不能用」的元凶：
-    // 零点带坡度只让读数整体偏小几度，属于精度损失，而整体禁用报警等于把安全功能关掉 ——
-    // 用户看到的就是「永远不报警、永远 0.00°」。现在改为照常测量、照常预警，横幅只做精度提示。
-    var g = grade(relPitch());
-    // 侧立奇点姿态下纵向角不可测 → 强制回到安全档，避免拿起手机就误长鸣
-    var lv = debounceLevel(g, !state.upright);
-    if (lv === 'safe'){
-      stopLong(); beatLast = 0; beatIdx = 0;
-      return;
-    }
+    var j = judge(headPitch());
+    if (audio.muted || j.level === 'safe'){ beatIdx = 0; return; }
     var now = Date.now();
-    if (lv === 'alarm'){
-      if (audio.muted) stopLong(); else startLong();
-      if (now - beatLast >= 1300){
+    if (j.level === 'alarm'){
+      var gap = beatIdx >= 3 ? 700 : 170;
+      if (now - beatLast >= gap){
         beatLast = now;
-        vibrate([55, 60, 55, 60, 55]);
+        var newRound = beatIdx >= 3 || beatIdx === 0;
+        beatIdx = beatIdx >= 3 ? 1 : beatIdx + 1;
+        beep(1250, 0.09, 0.36);
+        if (newRound) vibrate([45,60,45,60,45]);
       }
-      return;
-    }
-    // warn：0% → 100% 之间，间隔 620ms 缩到 140ms
-    stopLong();
-    var r = (g.ratio - WARN_RATIO) / (ALARM_RATIO - WARN_RATIO);
-    r = Math.max(0, Math.min(1, r));
-    var gap = 620 - 480 * r;
-    if (now - beatLast >= gap){
-      beatLast = now;
-      if (!audio.muted) warnTick(r);
-      if (beatIdx++ % 5 === 0) vibrate(16);
+    } else {
+      if (now - beatLast >= 560){
+        beatLast = now;
+        beep(880, 0.09, 0.2);
+      }
     }
   }, 30);
-
-  // 数值节点更新：文本节点原地改写，避免每帧 innerHTML 重建（60Hz 下每秒 60 次 HTML 解析与重排）
-  function setVal(el, txt){
-    var n = el.firstChild;
-    if (n && n.nodeType === 3){
-      if (n.nodeValue !== txt) n.nodeValue = txt;
-      return;
-    }
-    el.textContent = txt;
-    var em = document.createElement('em');
-    em.textContent = '°';
-    el.appendChild(em);
-  }
-
-  // class 变更缓存：只有状态真的翻转时才碰 DOM，减少样式重算
-  var lastCls = {};
-  function toggleCls(el, cls, on, key){
-    if (lastCls[key] === on) return;
-    lastCls[key] = on;
-    el.classList.toggle(cls, on);
-  }
 
   function render(){
     var lat = state.lat, lon = state.lon, tot = state.tot;
 
-    setVal(elLat, fmt(lat));
-    setVal(elLon, fmt(lon));
-    setVal(elTot, fmt(tot));
+    elLat.innerHTML = fmt(lat) + '<em>°</em>';
+    elLon.innerHTML = fmt(lon) + '<em>°</em>';
+    elTot.innerHTML = fmt(tot) + '<em>°</em>';
     // 圆球只显示纵向数值（车头/车尾俯仰）
     elGv.textContent = fmt(lon);
 
-    // 侧立奇点：横向/纵向数学上都不可测，两个读数一起置灰（改前只灰横向、纵向默默归零，表现不一致）
-    toggleCls(elLat, 'frozen', state.upright, 'latFrozen');
-    toggleCls(elLon, 'frozen', state.upright, 'lonFrozen');
-    // 测量暂停：数值照常显示，但打上「测量暂停」角标 —— 用户必须能看出这一刻读数不作数
-    toggleCls(elLon, 'paused', state.measPaused && !state.upright, 'lonPaused');
-
-    // 气泡位置：纵向按各自的限位角归一化，到达限位线即超限；横向不做限位判定，仅作方向指示
-    var upLimit   = HEADING === 1 ? APPROACH  : DEPARTURE;
-    var downLimit = HEADING === 1 ? DEPARTURE : APPROACH;
+    // 气泡位置：纵向按各自的限位角归一化，到达限位线即超限
+    var rMax = (elBubble.parentElement ? elBubble.parentElement.clientWidth : 300) * MAX_OFFSET;
+    var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;
+    var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
     var lonLimit  = lon >= 0 ? upLimit : downLimit;
-    var nx = Math.max(-1, Math.min(1, (lat / LATERAL_REF) * VIEW_RATIO));
-    var ny = Math.max(-1, Math.min(1, (-lon / lonLimit) * VIEW_RATIO));  // 顶部抬起 → 气泡上移（屏幕上方 = 上坡方向）
-    // 平滑。【deep11】暂停期间不再冻结气泡：上一版冻结后用户看到的是「数值一动不动」，
-    // 主观感受就是「程序坏了」。刹车瞬间重力向量偏移是真实现象，如实显示并打低置信角标，
-    // 比假装静止更诚实。
+    var nx = Math.max(-1, Math.min(1, (lat / 30) * VIEW_RATIO));
+    var ny = Math.max(-1, Math.min(1, (-lon / lonLimit) * VIEW_RATIO));  // 顶部抬起 → 气泡向后（向下）
+    // 平滑
     state.smooth.x += (nx - state.smooth.x) * 0.25;
     state.smooth.y += (ny - state.smooth.y) * 0.25;
 
     elBubble.style.transform = 'translate(-50%,-50%) translate(' +
-      (state.smooth.x * gaugeRMax).toFixed(1) + 'px,' + (state.smooth.y * gaugeRMax).toFixed(1) + 'px)';
+      (state.smooth.x * rMax).toFixed(1) + 'px,' + (state.smooth.y * rMax).toFixed(1) + 'px)';
 
     // 指针显示横向倾角
     var ang = Math.max(-45, Math.min(45, lat)) * 2;
     elNeedle.style.transform = 'translateX(-1px) rotate(' + ang.toFixed(1) + 'deg)';
 
-    // 接近角 / 离去角 分级：按相对倾角占限位的比例，70% 起预警、95% 起长鸣
-    // 侧立奇点姿态下纵向角无意义，此时不做通过角判定，避免拿起手机就误长鸣
-    var j = (state.upright || state.measPaused)
-      ? { level:'safe', which: relPitch() >= 0 ? 'app' : 'dep', ratio:0, lim:0 }
-      : grade(relPitch());
+    setLevelClass(tot);
+
+    // 接近角 / 离去角 限位判定与视觉告警
+    var j = judge(headPitch());
     var alarm = j.level === 'alarm';
-    setLevelClass(j, tot);
-    toggleCls(document.body, 'alarm', alarm, 'bodyAlarm');
-    // 高亮归属直接用「命中的限位角」跟「上/下两条限位线的角」比对：
-    // 改前拿 which 硬对 elLimUp/elLimDown，把 HEADING=-1 时的上下关系写反，警示线亮错方向。
-    var upHit   = alarm && j.lim === upLimit;
-    var downHit = alarm && j.lim === downLimit;
-    toggleCls(elLimUp,   'hit', upHit,   'limUp');
-    toggleCls(elLimDown, 'hit', downHit, 'limDown');
-    toggleCls(elSlopeUp, 'hit', upHit,   'slopeUp');
-    toggleCls(elSlopeDown,'hit', downHit,'slopeDown');
-    toggleCls(elTagApp, 'on', j.level !== 'safe' && j.which === 'app', 'tagApp');
-    toggleCls(elTagDep, 'on', j.level !== 'safe' && j.which === 'dep', 'tagDep');
-    // 震动统一交给报警定时器（去抖后的等级），此处不再重复触发，避免双重震动节拍
-  }
-
-  // 大幅变化的「直通」必须连续两帧同向才生效：真实的倾斜会持续很多帧，
-  // 而过坎、手磕、刹车只会给单帧尖峰。改前单帧超过 JUMP_DEG 就直接写进读数，
-  // 纵向会瞬间闪到十几度，读数抖动同时也是误报的来源。
-  var dirLat = 0, dirLon = 0;
-  function followGain(d, q, k, key){
-    var dir = d > 0 ? 1 : -1;
-    var big = Math.abs(d) > JUMP_DEG && q > 0.7;
-    var prev = key === 'lat' ? dirLat : dirLon;
-    var confirmed = big && prev === dir;      // 上一帧也是同向的大变化 → 判定为真实倾斜
-    if (key === 'lat') dirLat = big ? dir : 0; else dirLon = big ? dir : 0;
-    return confirmed ? 1 : k;
-  }
-
-  /* -------------------- 深度整改：坡上拦截 / 加速度冻结 / 安装角基线 -------------------- */
-  // 支架安装角基线：手机在支架上的固定姿态（跨会话保留）。有了它，「偏离水平面 20-30°」这种正常
-  // 安装角就不会被误判成坡；只有「偏离安装角基线」才说明车确实停在坡上。
-  var mountBase = { lat:null, lon:null };
-  try{
-    var _mb = localStorage.getItem('level.mountBase.v1');
-    if (_mb){
-      var _mo = JSON.parse(_mb);
-      if (_mo && isFinite(_mo.lat) && isFinite(_mo.lon)){
-        mountBase.lat = +_mo.lat; mountBase.lon = +_mo.lon;
-      }
-    }
-  }catch(e){}
-
-  function saveMountBase(){
-    try{ localStorage.setItem('level.mountBase.v1', JSON.stringify({ lat:mountBase.lat, lon:mountBase.lon })); }catch(e){}
-  }
-  function learnMountBase(lat, lon){
-    if (mountMode !== 'stand') return;            // 平放态没有安装角，不建基线
-    if (mountBase.lat === null || mountBase.lon === null){
-      mountBase.lat = lat; mountBase.lon = lon; saveMountBase(); return;
-    }
-    var d = Math.sqrt((lat - mountBase.lat) * (lat - mountBase.lat) + (lon - mountBase.lon) * (lon - mountBase.lon));
-    if (d < 1.5){                                 // 与历史基线一致 → 慢速滚动平均，抗单次装夹误差
-      mountBase.lat = mountBase.lat * 0.8 + lat * 0.2;
-      mountBase.lon = mountBase.lon * 0.8 + lon * 0.2;
-      saveMountBase();
-    }
-  }
-  // 用户点「仍然使用」= 明确认可「此刻的零点就是安装角，不是坡」→ 把当前姿态写回基线
-  function forceMountBase(){
-    if (mountMode !== 'stand') return;
-    mountBase.lat = state.calLat; mountBase.lon = state.calLon;
-    saveMountBase();
-  }
-  // 「残留坡度」：平放态 = 相对水平面的合成角；支架态 = 相对安装角基线的偏差（无基线时退回合成角）
-  function mountResid(lat, lon, tot){
-    if (mountMode === 'stand'){
-      // 支架上一开机就是 20-30° 的安装角，没有基线就无法区分「安装角」与「坡」→ 首装不判定，只学习基线
-      if (mountBase.lat === null || mountBase.lon === null) return 0;
-      return Math.sqrt((lat - mountBase.lat) * (lat - mountBase.lat) + (lon - mountBase.lon) * (lon - mountBase.lon));
-    }
-    return tot;
-  }
-
-  function suspendAlarm(deg, how, mount){
-    state.calSuspect = true;
-    state.susDeg = deg;
-    // 【deep11d】零点改回「水平参照」：既然判定车此刻在坡上，就不该把这段坡也扣成 0°，
-    // 否则用户上电看到的是恒定的 0.00°，主观感受就是「程序挂了」。
-    // 平放族以真实水平面为零点；支架族用已学到的安装角基线（无基线时才无法区分）。
-    if (mount === 'stand'){
-      if (mountBase.lat !== null && mountBase.lon !== null){
-        state.calLat = mountBase.lat; state.calLon = mountBase.lon;
-      }
-    } else {
-      state.calLat = 0; state.calLon = 0;
-    }
-    var act = (how === 'auto') ? '开机自动校准' : '本次校准';
-    var why = (mount === 'stand')
-      ? act + '读到的安装角比平时偏了 ' + deg.toFixed(1) + '°，说明车此刻停在坡上。'
-      : act + '时车身偏离水平面 ' + deg.toFixed(1) + '°，说明车此刻停在坡上。';
-    elBannerTxt.innerHTML = '⚠ <b>上电时车停在坡上（' + deg.toFixed(1) + '°）</b>：' + why
-      + ' 已按<b>水平面</b>作零点，所以现在显示的就是<b>真实车身倾角</b>，预警照常工作。'
-      + ' 开到平路会<b>自动重校</b>，也可点「平路重新校准」。';
-    elBanner.classList.add('show');
-  }
-  function clearSuspend(){
-    state.calSuspect = false;
-    state.susDeg = 0;
-    elBanner.classList.remove('show');
-  }
-
-  function pauseMeasure(why){
-    // 冷静期：fail-safe 刚把测量强制恢复，若车身还在加速就立刻再暂停，用户看到的是「永久卡住」。
-    // 强制恢复后至少给 COOLDOWN_MS 的正常测量窗口，让数值和报警真正跑起来。
-    if (Date.now() < state.noPauseUntil) return;
-    state.pauseWhy = why;
-    if (state.measPaused) return;
-    state.measPaused = true;
-    state.pausedAt = Date.now();
-    stopLong(); resetLevel(); beatLast = 0; beatIdx = 0;
-  }
-  function resumeMeasure(){
-    state.measPaused = false; state.pauseWhy = '';
-    state.pausedAt = 0; state.oriBadSince = 0;
-    state.dynSince = 0; state.dynClear = 0; state.linSince = 0;
-    resetLevel();
-  }
-
-  // 【deep11】姿态交叉校验（crossCheck）已彻底移除 —— 它是上一版「完全无法使用」的根因：
-  //   它把「加速度计解算的纵向角 absLon」与「deviceorientation 的俯仰折算角」当同一刻度直接相减。
-  //   但两者参考系不同（beta 是绕设备 x 轴、含 90° 常数与安装角）、滤波时间常数也不同，
-  //   于是真实上坡、调整支架、驶入坡道这些「正常动作」都会让差值瞬间超过 5°，被判成姿态污染；
-  //   更致命的是暂停期间 oriBias 停止学习，差值再也回不到解冻门限，形成死锁。
-  //   实测：5° 缓坡即永久冻结（why=cross），车上永远在坡上 → 整机不可用。改用线性加速度判据。
-  var oriBias = null;   // 仅留给调试面板显示，不再参与任何判定
-
-  // 动态判定（双判据）：
-  //   硬判据 = 加速度模长偏离 1g → 急加速 / 急刹 / 大颠簸
-  //   软判据 = 姿态交叉校验超差 → 中等力度持续刹车（模长几乎不变，但纵向角被顶偏十几度）
-  function updateDyn(aDev, linMag){
-    var now = Date.now();
-    var linBad = (linMag !== null && linMag > LIN_TOL);
-    var magBad = (aDev > DYN_TOL);
-
-    // 主判据：线性加速度
-    if (linBad){
-      if (!state.linSince) state.linSince = now;
-      if (now - state.linSince >= LIN_ON_MS) pauseMeasure('accel');
-    } else state.linSince = 0;
-
-    // 兜底判据：重力模长偏离（acceleration 不可用时）
-    if (magBad){
-      if (!state.dynSince) state.dynSince = now;
-      if (now - state.dynSince >= DYN_ON_MS) pauseMeasure('accel');
-    } else state.dynSince = 0;
-
-    if (state.measPaused){
-      // fail-safe：超时强制恢复，宁可在低置信下继续报警，也不让报警永久哑掉
-      if (state.pausedAt && now - state.pausedAt >= MAX_PAUSE_MS){
-        state.measPaused = false; state.pauseWhy = '';
-        state.linSince = 0; state.dynSince = 0; state.dynClear = 0; state.pausedAt = 0;
-        state.lowConf = true;
-        state.noPauseUntil = now + COOLDOWN_MS;
-        resetLevel();
-        return;
-      }
-      var calm = !linBad && (linMag === null || linMag < LIN_TOL * 0.5) && (aDev < DYN_TOL * 0.5);
-      if (calm){
-        if (!state.dynClear) state.dynClear = now;
-        if (now - state.dynClear >= LIN_OFF_MS) resumeMeasure();
-      } else state.dynClear = 0;
-    } else {
-      state.dynClear = 0;
-      if (state.lowConf && !linBad && !magBad) state.lowConf = false;
+    document.body.classList.toggle('alarm', alarm);
+    elLimUp.classList.toggle('hit', alarm && j.which === 'dep');
+    elLimDown.classList.toggle('hit', alarm && j.which === 'app');
+    elTagDep.classList.toggle('on', j.level !== 'safe' && j.which === 'dep');
+    elTagApp.classList.toggle('on', j.level !== 'safe' && j.which === 'app');
+    // 盘面上坡/下坡框：超限时对应方向变红
+    var upIsDep = HEADING === 1;   // 顶部朝车头时，屏幕上坡 = 离去角
+    elSlopeUp.classList.toggle('hit',
+      alarm && ((j.which === 'dep' && upIsDep) || (j.which === 'app' && !upIsDep)));
+    elSlopeDown.classList.toggle('hit',
+      alarm && ((j.which === 'app' && upIsDep) || (j.which === 'dep' && !upIsDep)));
+    if (alarm && Date.now() - state.lastVibe > 400){
+      state.lastVibe = Date.now();
+      vibrate([45, 55, 45, 55, 45]);
     }
   }
 
   function update(grav){
     var p = project(grav);
-    state.nSample++;
-    state.up = p.up; state.sz = p.sz; mountMode = p.mount;
-
-    // 姿态可信权重：重力在主竖直轴上的分量 up 从 MIN_UP→FULL_UP 线性映射到 0→1。
-    // 平放（up≈1）与竖立（up≈1）都能正常测量，只有侧立奇点 up→0 时才淡出。
-    var w = (p.up - MIN_UP) / (FULL_UP - MIN_UP);
-    w = w < 0 ? 0 : (w > 1 ? 1 : w);
-    state.upright = p.up < UPRIGHT_UP;   // 横向/纵向共用同一个侧立门限（改前一个用 w<0.5、一个用 MIN_UP）
-
-    // 数据质量 q：加速度模长偏离 1g 越远（刹车、过坎、车身纵向加速度叠加）越不可信，
-    // 此时降低跟随速度、并禁用「大幅直通」，否则车身加减速会被当成坡度写进纵向角。
-    var q = 1;
-    if (state.lastMag > 0 && isFinite(state.lastMag)){
-      var magG = state.lastMag > 3 ? state.lastMag / 9.80665 : state.lastMag;   // 兼容 g 与 m/s² 两种单位
-      var dev = Math.abs(magG - 1);
-      q = 1 - (dev - Q_TOL) / (Q_FULL - Q_TOL);
-      q = q < 0 ? 0 : (q > 1 ? 1 : q);
-    }
-    state.quality = q;
-    state.aDev = (state.lastMag > 0 && isFinite(state.lastMag))
-      ? Math.abs((state.lastMag > 3 ? state.lastMag / 9.80665 : state.lastMag) - 1) : 0;
-
-    // 横向与纵向走同一套低通：纵向直接参与通过角报警，绝不能再拿单帧值。
-    // 干净数据下大幅真实倾斜（>JUMP_DEG）直通保证响应速度，其余情况按 q 调节系数平滑。
-    var kLat = Math.max(LPF_MIN, LPF_LAT * (0.30 + 0.70 * q));
-    var dLat = p.lat - state.absLat;
-    state.absLat += dLat * followGain(dLat, q, kLat, 'lat');
-
-    var kLon = Math.max(LPF_MIN, LPF_LON * (0.30 + 0.70 * q));
-    var dLon = p.lon - state.absLon;
-    state.absLon += dLon * followGain(dLon, q, kLon, 'lon');
-
-    if (Math.abs(state.absLat) < 0.01) state.absLat = 0;
-    if (Math.abs(state.absLon) < 0.01) state.absLon = 0;
-
-    var calLat = state.hasCal ? state.calLat : 0;
-    var calLon = state.hasCal ? state.calLon : 0;
-    // 输出：扣掉校准零点后按侧立权重淡出。横向纵向一视同仁（改前横向乘 w、纵向硬切归零）
-    state.lat = (state.absLat - calLat) * w;
-    state.lon = (state.absLon - calLon) * w;
-    if (Math.abs(state.lat) < 0.02) state.lat = 0;
-    if (Math.abs(state.lon) < 0.02) state.lon = 0;
-
-    // 【deep11c】坡上开机的自动脱困：零点被坡度吃掉后，只要车开到水平路面并稳定 3s，
-    // 就把零点重校为当前水平姿态，免得用户带着「偏小 X°」的零点一路开下去。
-    if (state.calSuspect && state.hasCal && !state.upright && !state.measPaused){
-      var canFlat = (mountMode !== 'stand') || (mountBase.lat !== null && mountBase.lon !== null);
-      if (canFlat){
-        var rNow = mountResid(state.absLat, state.absLon,
-                              Math.sqrt(state.absLat * state.absLat + state.absLon * state.absLon));
-        if (rNow < 1.0){
-          if (!state.flatSince) state.flatSince = Date.now();
-          else if (Date.now() - state.flatSince >= 3000){
-            state.calLat = state.absLat; state.calLon = state.absLon;
-            state.flatSince = 0;
-            clearSuspend();
-            if (elHint) elHint.textContent = '已在平路自动重新校准零点，读数与预警恢复正常。';
-          }
-        } else state.flatSince = 0;
-      } else state.flatSince = 0;
-    }
-    // 合成倾角用未淡出的真实相对角：它只用于「是否已水平」提示，不该被侧立权重污染
-    var dLatC = state.absLat - calLat, dLonC = state.absLon - calLon;
-    state.tot = Math.sqrt(dLatC * dLatC + dLonC * dLonC);
-
-    // 车身持续加速/刹车 → 冻结纵向报警（这是「刹车当坡度」的根治手段，比压低通滤波率更彻底）
-    // 生效的线性加速度：超过 300ms 没更新（走 orientation 兜底通道时）视为无效
-    var linMag = (state.linTs && Date.now() - state.linTs <= 300) ? state.linMag : null;
-    state.linMagNow = linMag;
-    state.oriDev = null;          // 交叉校验已移除，保留字段仅供调试面板显示
-    updateDyn(state.aDev, linMag);
-
+    state.absLat = p.lat;
+    state.absLon = p.lon;
+    state.lat = p.lat - (state.hasCal ? state.calLat : 0);
+    state.lon = p.lon - (state.hasCal ? state.calLon : 0);
+    var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
+    state.tot = t;
     render();
   }
 
-  // 数据源与断流指示（每秒一次，独立于传感器帧率）
-  // 改前挂在 update() 里，帧率掉到 0 时状态栏就永远停在旧值，看不出「传感器已断，读数已冻结」。
-  function statusTick(){
-    if (!state.running) return;
-    var now = Date.now();
-    var idle = now - lastEvent;
-    if (state.paused) return;                 // 后台挂起时不显示断流，避免切回前台瞬间闪烁
-    if (idle > 3000){
-      stopLong();
-      if (elStatus.textContent !== '传感器断流'){
-        elStatus.className = 'status err';
-        elStatus.textContent = '传感器断流';
-      }
-      return;
-    }
-    if (idle > 1200) return;                  // 短暂静默（静止时的采样优化）不刷，避免来回跳
-    if (state.measPaused){
-      var pTxt = '测量暂停·车身加速';
-      if (elStatus.textContent !== pTxt){
-        elStatus.className = 'status err';
-        elStatus.textContent = pTxt;
-      }
-      return;
-    }
-    if (state.calSuspect){
-      var cTxt = '坡上上电 ' + state.susDeg.toFixed(0) + '°·平路自动重校';
-      if (elStatus.textContent !== cTxt){
-        elStatus.className = 'status err';
-        elStatus.textContent = cTxt;
-      }
-      return;
-    }
-    var t = state.mode === 'motion' ? '重力模式'
-          : (state.mode === 'orientation' ? '方向模式' : '等待传感器');
-    // 姿态标签：手机平放和装在支架上（竖立）用的是两套解算轴，标出来便于确认识别正确
-    if (t !== '等待传感器' && state.nSample > 0){
-      t += mountMode === 'stand' ? '·支架竖立' : '·平放';
-    }
-    if (elStatus.textContent !== t){
-      elStatus.className = 'status on';
-      elStatus.textContent = t;
-    }
-  }
-  setInterval(statusTick, 1000);
-
   /* -------------------- 事件 -------------------- */
-  // 通道优先级：devicemotion（加速度计，无欧拉角奇点）优先，deviceorientation 只做兜底。
-  // 原因：iOS 竖立持握时 beta≈90°，Z-X'-Y'' 欧拉角撞上万向锁，横滚几乎不体现在 gamma 上，
-  // 旧的"orientation 优先"会让整个竖立姿态的横向读数钉死在 0（真机 iPhone 12 实测无误）。
-  var lastEvent = 0;      // 任意通道最后有效数据时刻
-  var lastMotion = 0;     // motion 通道最后有效数据时刻
-  var MOTION_HOLD = 2500; // motion 静默多久才允许 orientation 接管（真机 60Hz，正常永不回落）
-
+  var lastEvent = 0;
   function onOrientation(e){
     if (e.beta === null && e.gamma === null) return;
-    // 无论是否让位给加速度计，都先把俯仰记下来：
-    // (1) 竖立开局时加速度计判不出符号，需要它做交叉校验；
-    // (2) 方向模式兜底公式本身要用 alpha/beta/gamma。
-    state.lastBeta = (typeof e.beta === 'number') ? e.beta : null;
-    // 同时留存一份「陀螺融合俯仰」供加速度计做交叉校验（不受线性加速度污染）
-    if (typeof e.beta === 'number'){
-      state.oriTs = Date.now();
-      if (state.oriPitch === null){ state.oriPitch = e.beta; state.oriPitchS = e.beta; }
-      else { state.oriPitch = e.beta; state.oriPitchS += (e.beta - state.oriPitchS) * 0.2; }
-    }
-    var raw = state.rawUnit;
-    // 只在加速度计自己还判不出符号时补判（gzSign===0），不覆盖已锁定的结论，
-    // 否则两个通道姿态不同步时会把正确符号改坏。
-    if (raw && gzSign === 0 && Math.abs(raw.z) < GZ_HYST){
-      var s = signFromPitch(raw.y);
-      if (s) gzSign = s;
-    }
-    if (Date.now() - lastMotion < MOTION_HOLD) return;   // 加速度计有数据 → 让位
+    if (e.absolute === false && state.mode !== 'orientation') { /* 依旧可用 */ }
     state.mode = 'orientation';
     lastEvent = Date.now();
     update(gravityFromOrientation(e.alpha || 0, e.beta || 0, e.gamma || 0));
   }
 
   function onMotion(e){
+    if (state.mode === 'orientation' && Date.now() - lastEvent < 1500) return;
     var a = e.accelerationIncludingGravity;
     if (!a || (a.x === null && a.y === null && a.z === null)) return;
-    var ax = a.x || 0, ay = a.y || 0, az = a.z || 0;
-    // 幅值健全性：单位可能是 g(≈1) 或 m/s²(≈9.8)，但绝不该接近 0。
-    // 若某些机型只发空壳数据，不能让它们刷新 lastMotion 把 orientation 兜底通道也堵死。
-    var mag = Math.sqrt(ax*ax + ay*ay + az*az);
-    if (!(mag > 0.35)) return;
-    // 【deep11】线性加速度：iOS 的 e.acceleration 已由系统扣除重力，是判断「车在加速/刹车」
-    // 最直接的物理量。老机型/部分浏览器为 null，此时置 null 走模长兜底判据。
-    var la = e.acceleration;
-    if (la && (la.x !== null || la.y !== null || la.z !== null)){
-      var lx = la.x || 0, ly = la.y || 0, lz = la.z || 0;
-      var lin = Math.sqrt(lx * lx + ly * ly + lz * lz);
-      state.linMag = lin > 3 ? lin / 9.80665 : lin;   // 兼容 m/s² 与 g 两种单位
-      state.linTs = Date.now();
-    }
     state.mode = 'motion';
-    lastMotion = Date.now();
-    lastEvent = lastMotion;
-    update(gravityFromMotion(ax, ay, az));
+    update(gravityFromMotion(a.x || 0, a.y || 0, a.z || 0));
   }
 
   var listening = false;
@@ -1197,14 +611,18 @@
     window.addEventListener('deviceorientation', onOrientation, true);
     window.addEventListener('devicemotion', onMotion, true);
     elStatus.className = 'status on';
-    elHint.textContent = '已启用：到达限位 70%（接近 ' + (APPROACH*0.7).toFixed(1) + '° / 离去 ' + (DEPARTURE*0.7).toFixed(1) + '°）起递进式雷达音，越近越急；95% 或超过直接持续长鸣并闪屏。若没听到试听声，请关闭手机侧边静音键并把媒体音量调大';
+    elHint.textContent = '已启用：超出接近角 ' + APPROACH + '° / 离去角 ' + DEPARTURE + '° 时小球闪烁并「嘀嘀嘀」。若刚没听到试听声，请关闭手机侧边静音键并把媒体音量调大';
     setTimeout(function(){
       if (!state.running) return;
-      // 状态栏文案统一由 statusTick 维护，这里只补一句授权/HTTPS 的可操作提示
       if (Date.now() - lastEvent > 2500 && state.mode === 'none'){
+        // 两个通道都没数据
+        elStatus.className = 'status err';
+        elStatus.textContent = '无传感器数据';
         elHint.textContent = '未收到传感器数据：请确认用 HTTPS 打开，且已在系统设置中允许浏览器访问运动与方向';
+      } else {
+        elStatus.textContent = state.mode === 'motion' ? '重力模式' : '方向模式';
       }
-    }, 2500);
+    }, 2000);
     requestWakeLock();
   }
 
@@ -1261,82 +679,26 @@
 
   function calibrate(silent){
     if (!silent) autoCalArmed = false;   // 手动校准后不再被自动校准覆盖
-    var grav = state._lastGrav || { x:0, y:0, z:-1 };
-    var pp = project(grav);
-    var upright = state.nSample > 0 ? state.upright : (pp.up < UPRIGHT_UP);
-    var tiltNow = Math.sqrt(pp.lat * pp.lat + pp.lon * pp.lon);   // 相对「水平放置、车头朝前」的偏离量
-
-    if (upright){
-      // 侧立奇点：横向/纵向都不可测。首次校准也必须落 hasCal（否则后续读到 hasCal=false 会走未校准路径），
-      // 但零点固定为 0 —— 绝不把侧立时的随机角度当成基准写进去。
-      if (!state.hasCal){ state.calLat = 0; state.calLon = 0; }
-      // 已有基准则原样保留
-    } else if (state.nSample > 0){
-      // 基准取「当前这一帧的投影值」，同时把平滑状态一并同步到该值。
-      // 改前只写 state.absLat/absLon（低通输出）：刚启动就校准时低通还在爬升，
-      // 基准会停在半路，留下 0.5-1° 的恒定零点偏（装支架时安装角大、爬升更久，偏得更明显），
-      // 表现为「校准完不是 0.00°，上坡读数还差一截」。
-      state.calLat = pp.lat; state.calLon = pp.lon;
-      state.absLat = pp.lat; state.absLon = pp.lon;
-    } else {
-      // 还没收到任何有效帧：用当前重力反算一次，并同步平滑状态，避免首帧跳变
-      state.calLat = pp.lat; state.calLon = pp.lon;
-      state.absLat = pp.lat; state.absLon = pp.lon;
-    }
+    var p = project(state._lastGrav || {x:0, y:0, z:-1});
+    state.calLat = p.lat;
+    state.calLon = p.lon;
     state.hasCal = true;
-
-    // 坡上校准拦截：先把「支架安装角」与「真实坡度」分开，再看这段坡度是不是被一起扣掉了
-    if (!upright){
-      var resid = mountResid(state.calLat, state.calLon, tiltNow);
-      if (resid > SUSPECT_DEG){
-        suspendAlarm(resid, silent ? 'auto' : 'manual', mountMode);
-      } else {
-        clearSuspend();
-        learnMountBase(state.calLat, state.calLon);
-      }
-    }
-
     if (!silent){
       vibrate(20);
-      if (upright){
-        elHint.textContent = '已校准：手机处于侧立姿态，横向/纵向此时不可测，已保留原零点；请转回平放或竖立后再校一次';
-      } else if (tiltNow > 3){
-        // 支架竖立时手机本身就不水平，这里的偏离主要来自支架安装角（20-30° 很常见），
-        // 它会被一并扣成零点 —— 这不是问题，问题是「车此刻是否停在坡上」同样会被扣掉。
-        elHint.textContent = '已校准：已把当前姿态（含支架安装倾角/平放姿态，约 ' + tiltNow.toFixed(0) + '°）一并记为 0.00°。'
-          + '只要校准这一刻车是停在水平路面上，之后读到的就是纯坡度；若车正停在坡上，零点会被带偏，请挪到平路重校一次';
-      } else {
-        elHint.textContent = '已校准：当前姿态记为 0.00°，可点「重置」清除';
-      }
+      elHint.textContent = '已校准：当前姿态记为 0.00°，可点「重置」清除';
       if (state._lastGrav) update(state._lastGrav);   // 立即刷新为 0.00°
     }
   }
 
   $('btnCal').addEventListener('click', function(){ calibrate(false); });
 
-  // 横幅：平路重校（重跑一次手动校准，若还在坡上会再次被拦）
-  $('btnBannerCal').addEventListener('click', function(){ calibrate(false); });
-  // 横幅：明确忽略 —— 报警恢复，并把当前姿态认作安装角基线（下次同样的姿态不再被拦）
-  $('btnBannerOk').addEventListener('click', function(){
-    var deg = state.susDeg;
-    forceMountBase();
-    clearSuspend();
-    resetLevel();
-    vibrate(12);
-    elHint.textContent = '已忽略坡上提示，报警恢复。读数仍以本次零点为基准，坡度整体偏小 ' + deg.toFixed(1)
-      + '° —— 下坡前请自行目测确认坡长与坡底状况';
-    if (state._lastGrav) update(state._lastGrav);
-  });
-
   $('btnReset').addEventListener('click', function(){
     state.hasCal = false;
     state.calLat = 0;
     state.calLon = 0;
     vibrate(12);
-    clearSuspend();                                                   // 重置同时解除坡上拦截
-    elHint.textContent = '校准已重置，读数回到绝对倾角（报警按绝对倾角判定，仅作排障用）';
-    resetLevel();                                                     // 清零报警去抖状态，避免残留档位
-    if (state._lastGrav) update(state._lastGrav);                     // 立即按绝对倾角刷新
+    elHint.textContent = '校准已重置，读数回到绝对倾角';
+    if (!autoCalArmed && state._lastGrav) update(state._lastGrav);   // 立即按绝对倾角刷新
   });
 
   $('btnSound').addEventListener('click', function(){
@@ -1357,8 +719,8 @@
     elGauge.classList.add('show-slope');   // 首次点击后盘面出现上坡/下坡框型提示
     vibrate(15);
     elHint.textContent = HEADING === 1
-      ? '当前设定：手机顶部朝向车头，屏幕向上 = 上坡（接近角约束）'
-      : '当前设定：手机顶部朝向车尾，屏幕向上 = 下坡（离去角约束）';
+      ? '当前设定：手机顶部朝向车头，屏幕向上 = 上坡（离去角约束）'
+      : '当前设定：手机顶部朝向车尾，屏幕向上 = 下坡（接近角约束）';
   });
 
   $('btnFull').addEventListener('click', function(){
@@ -1376,61 +738,25 @@
   });
 
   // 记录最近一次重力向量，供校准使用；并做「打开即自动校准置零」
-  var autoCalArmed = true, autoCalTs = 0, autoCalN = 0;
-  var autoCalLat = 0, autoCalLon = 0, autoCalTot = 0, autoCalWarned = false;
+  var autoCalArmed = true, autoCalTs = 0, autoCalN = 0, autoCalLat = 0, autoCalLon = 0;
   var _update = update;
   update = function(grav){
     state._lastGrav = grav;
     _update(grav);
-    if (!autoCalArmed) return;
-    if (!autoCalTs) autoCalTs = Date.now();
-    // 只采「姿态可信 + 数据干净」的样本：
-    //   侧立时 lat/lon 是噪声决定的随机值；车身在加速/刹车/过坎时 gravity 向量被污染。
-    // 这两类样本一旦混进平均值，零点就会被带偏好几度，之后所有报警阈值跟着整体偏移。
-    if (!state.upright && state.quality >= 0.6){
-      // 采「原始投影值」而不是低通的 absLat/absLon：
-      // 低通从 0 起步爬升，刚打开就校准时窗口内的样本还没爬到真值，
-      // 平放时差 0.3° 不明显，装支架（安装角 20-30°）时平均下来差 0.8°，
-      // 表现为「自动校准后不是 0.00°、上坡读数普遍偏小一截」。
-      var pRaw = project(grav);
-      autoCalLat += pRaw.lat;
-      autoCalLon += pRaw.lon;
-      autoCalTot += Math.sqrt(pRaw.lat * pRaw.lat + pRaw.lon * pRaw.lon);
+    if (autoCalArmed){
+      if (!autoCalTs) autoCalTs = Date.now();
+      var pp = project(grav);
+      autoCalLat += pp.lat;
+      autoCalLon += pp.lon;
       autoCalN++;
-    } else if (autoCalN === 0 && Date.now() - autoCalTs > 15000 && !autoCalWarned){
-      autoCalWarned = true;
-      elHint.textContent = '自动校准未能采集到干净样本（手机姿态不稳或车身在加速），请停车放稳后点「校准置零」';
-    }
-    // 收满约 0.7 秒、至少 8 帧有效样本后取平均置零，避免首帧抖动与坡上/侧立样本污染
-    if (autoCalN >= 8 && Date.now() - autoCalTs >= 700){
-      autoCalArmed = false;
-      state.calLat = autoCalLat / autoCalN;
-      state.calLon = autoCalLon / autoCalN;
-      state.hasCal = true;
-      // 平滑状态同步到新基准：不同步的话，低通要从爬升途中的旧值追上基准，会先蹦出一个鬼影读数
-      state.absLat = state.calLat;
-      state.absLon = state.calLon;
-      var avgTot = autoCalTot / autoCalN;
-      var avgLat = state.calLat, avgLon = state.calLon;
-      // 支架竖立时「偏离水平面 20-30°」是正常安装角，不是坡：先扣掉历史安装角基线，剩下的才是真实坡度
-      var resid = mountResid(avgLat, avgLon, avgTot);
-      if (resid > SUSPECT_DEG){
-        // 关键整改：改前这里只是写一句 hint 文案，零点照样生效、报警照样启用 → 坡上开机等于漏报一整段
-        suspendAlarm(resid, 'auto', mountMode);
-        elHint.textContent = (mountMode === 'stand')
-          ? '已自动校准置零，但本次安装角比平时偏了约 ' + resid.toFixed(1) + '°：很可能是车停在坡上，零点把坡度一起扣掉了。'
-            + '报警已暂停，请停到平路后点「平路重新校准」'
-          : '已自动校准置零，但开机时车身偏离水平面约 ' + resid.toFixed(1) + '°：很可能车停在坡上，零点已被坡度带偏，'
-            + '之后读数会偏小 ' + resid.toFixed(1) + '°，预警会漏报。报警已暂停，请停到平路后点「平路重新校准」';
-      } else {
-        clearSuspend();
-        learnMountBase(avgLat, avgLon);
-        elHint.textContent = (mountMode === 'stand')
-          ? '已自动校准置零：按支架安装角约 ' + avgTot.toFixed(0) + '° 整体记为 0.00°，之后读到的就是纯坡度。'
-            + '若哪天挪了支架角度，点一次「校准置零」重学安装角即可'
-          : '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
+      // 收满约 0.7 秒、至少 8 帧样本后取平均置零，避免首帧抖动
+      if (autoCalN >= 8 && Date.now() - autoCalTs >= 700){
+        autoCalArmed = false;
+        state.calLat = autoCalLat / autoCalN;
+        state.calLon = autoCalLon / autoCalN;
+        state.hasCal = true;
+        elHint.textContent = '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
       }
-      _update(state._lastGrav);   // 让新零点立即生效，不必等下一帧
     }
   };
 
@@ -1438,8 +764,6 @@
   document.addEventListener('visibilitychange', function(){
     if (document.visibilityState === 'visible'){
       requestWakeLock();
-      state.paused = false;
-      resetLevel();            // 后台期间等级判定停摆，回来时清掉残留档位，避免立刻误报
       if (listening){
         window.removeEventListener('deviceorientation', onOrientation, true);
         window.removeEventListener('devicemotion', onMotion, true);
@@ -1447,11 +771,6 @@
         window.addEventListener('devicemotion', onMotion, true);
       }
     } else {
-      // 切到后台/锁屏：必须停长鸣。改前只释放了屏幕常亮，报警音会在后台一直响到用户回前台。
-      state.paused = true;
-      stopLong();
-      beatLast = 0; beatIdx = 0;
-      resetLevel();
       if (state.wakeLock && state.wakeLock.release){
         try{ state.wakeLock.release(); }catch(e){}
         state.wakeLock = null;
@@ -1459,49 +778,17 @@
     }
   });
 
-  // 排障钩子：只读暴露内部状态，便于自动化验证与真机 console 排查（不改变任何行为）
-  window.__levelDbg = function(){
-    var g = grade(relPitch());
-    return {
-      lat: state.lat, lon: state.lon, tot: state.tot,
-      upright: state.upright, quality: state.quality, mode: state.mode,
-      up: state.up, sz: state.sz, mount: mountMode,
-      absLat: state.absLat, absLon: state.absLon,
-      calLat: state.calLat, calLon: state.calLon,
-      paused: state.paused, hasCal: state.hasCal, nSample: state.nSample,
-      gzSign: gzSign, longOn: longOn, level: levelSql,
-      lim: g.lim, which: g.which, ratio: g.ratio,
-      cls: document.body.className,
-      hitUp: elLimUp.classList.contains('hit'),
-      hitDown: elLimDown.classList.contains('hit'),
-      tagApp: elTagApp.classList.contains('on'),
-      tagDep: elTagDep.classList.contains('on'),
-      frozenLat: elLat.classList.contains('frozen'),
-      frozenLon: elLon.classList.contains('frozen'),
-      // 深度整改新增
-      aDev: state.aDev, measPaused: state.measPaused, dynSince: state.dynSince,
-      linMag: state.linMagNow, lowConf: state.lowConf, pausedAt: state.pausedAt,
-      pauseWhy: state.pauseWhy, oriDev: state.oriDev, oriPitchS: state.oriPitchS, oriBias: oriBias,
-      calSuspect: state.calSuspect, susDeg: state.susDeg,
-      mountBaseLat: mountBase.lat, mountBaseLon: mountBase.lon,
-      bannerShown: elBanner.classList.contains('show'),
-      lonPaused: elLon.classList.contains('paused'),
-      slopePctApp: slopePct(APPROACH), slopePctDep: slopePct(DEPARTURE)
-    };
-  };
-
   // 首次渲染
   elGauge.classList.add('show-slope');   // 默认上坡模式，直接显示上坡/下坡框型提示
   layoutLimits();
   window.addEventListener('resize', layoutLimits);
   window.addEventListener('orientationchange', function(){ setTimeout(layoutLimits, 120); });
   render();
-  setVal(elLat, '--');
-  setVal(elLon, '--');
-  setVal(elTot, '--');
+  elLat.innerHTML = '--<em>°</em>';
+  elLon.innerHTML = '--<em>°</em>';
+  elTot.innerHTML = '--<em>°</em>';
   elGv.textContent = '--';
 })();
 </script>
-<div id="verTag" style="position:fixed;left:6px;bottom:3px;font-size:9px;line-height:1;color:#8a8a8a;opacity:.75;pointer-events:none;z-index:9999;font-family:ui-monospace,Menlo,monospace">v11</div>
 </body>
 </html>
