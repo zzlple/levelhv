@@ -130,6 +130,16 @@
   }
   body.alarm .gauge{animation:alarmPulse .55s ease-in-out infinite}
 
+  /* 小球闪烁：仅超限（离开安全范围）时闪，安全范围内常亮
+     注意：气泡位置由 inline transform 控制，keyframes 里绝不能改 transform，否则会跳回盘心 */
+  @keyframes bubbleBlink{
+    0%, 42%  {opacity:1;
+         box-shadow:0 0 26px rgba(255,59,59,.95),0 0 76px rgba(255,59,59,.5),inset 0 0 10px rgba(255,255,255,.4)}
+    43%, 100%{opacity:.14;
+         box-shadow:0 0 5px rgba(255,59,59,.2)}
+  }
+  body.alarm .bubble{animation:bubbleBlink .5s steps(1,end) infinite;will-change:opacity}
+
   /* 限位标签行 */
   .lim-tags{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
   .lim-tag{font-size:9.5px;letter-spacing:.02em;padding:2px 6px;border-radius:6px;
@@ -330,6 +340,30 @@
 
   /* -------------------- 音效引擎（嘀嘀嘀） -------------------- */
   var audio = { ctx:null, muted:false };
+  // iOS 的 WebAudio 会被硬件静音开关静音，故同时准备 <audio> 元素走媒体通道（静音键下仍可发声）
+  var SFX = {
+    alarm: 'data:audio/wav;base64,UklGRl4RAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YToRAAAAAGABwQIiBIMF5AZFCKYJBwuY8zfy1vB17xTus+xT6/LpkejQGDEakhvzHFQetR8WIXci2CPH2mbZBdil1kTV49OC0iHRwM+hMQIzYzTENSU3hjjnOUg7qTz3wZbANb/UvXO8EruxuVC4EUlyStNLNE2VTvZPV1G3UhhUh6omqcWnZKYDpaKjQaLgoH+f4mFDY6RkBWZlZ8ZoJ2qIa+lstpFVkPSOk40yjNGKcIkPiK6GmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHlohmiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohmiGmHmYeZh5mHmYeZh5mHmYeZh5aIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIZohph5mHmYeZh5mHmYeZh5mHmYeWiGaIZohmiGaIZohmiGaIaYeZh5mHmYeZh5mHmYeZh5mHmuhpqHhYhwiVyKR4syjB2NCY4McSFwNW9Kbl9tdGyIa51qsmk6lyWYEJn7meea0pu9nKmdlJ6BYJVfql6/XdRc6Fv9WhJa2qbFp7Com6mHqnKrXaxJrTSu4VD2TwpPH040TUhMXUtySodJZbdQuDu5J7oSu/276LzUvb++VkBqP38+lD2pPL070jrnOfs48MfbyMbJssqdy4jMdM1fzkrPyi/fLvQtCS0dLDIrRypbKZDXe9hm2VLaPdso3BTd/93q3isgPx9UHmkdfRySG6cavBnQGBvoBuny6d3qyOuz7J/tiu51758PtA7JDd4M8gsHCxwKMAlFCKb4kfl9+mj7U/w//Sr+Ff8=',
+    warn:  'data:audio/wav;base64,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'
+  };
+  var snd = { alarm:null, warn:null, alarmOk:undefined, warnOk:undefined };
+
+  function makeSnd(){
+    if (snd.alarm) return;
+    try{
+      snd.alarm = new Audio(SFX.alarm);
+      snd.alarm.preload = 'auto'; snd.alarm.setAttribute('playsinline',''); snd.alarm.volume = 1.0;
+      snd.warn  = new Audio(SFX.warn);
+      snd.warn.preload  = 'auto'; snd.warn.setAttribute('playsinline','');  snd.warn.volume = 0.85;
+      // iOS 部分版本要求媒体元素挂载到文档中才允许播放：用 1px 透明层挂载，而非 display:none
+      [snd.alarm, snd.warn].forEach(function(a){
+        try{
+          a.style.cssText = 'position:fixed;left:-4px;bottom:-4px;width:1px;height:1px;opacity:0.01;pointer-events:none';
+          (document.body || document.documentElement).appendChild(a);
+          a.load();
+        }catch(e){}
+      });
+    }catch(e){}
+  }
 
   function audioCtx(){
     if (audio.ctx) return audio.ctx;
@@ -341,24 +375,87 @@
     return audio.ctx;
   }
 
-  // iOS 需在用户手势里解锁音频
+  // 用 <audio> 播短音（iOS 静音键下依然出声）；每次重新起播，失败不记忆、下次仍重试
+  function playSnd(kind){
+    if (audio.muted) return false;
+    makeSnd();
+    var a = snd[kind];
+    if (!a) return false;
+    try{ a.volume = (kind === 'alarm') ? 1.0 : 0.85; }catch(e){}
+    try{
+      try{ a.pause(); }catch(e){}
+      try{ a.currentTime = 0; }catch(e){}
+      var p = a.play();
+      if (p && p.then){
+        p.then(function(){ snd[kind + 'Ok'] = true; })
+         .catch(function(){ snd[kind + 'Ok'] = false; });
+      } else { snd[kind + 'Ok'] = true; }
+      return true;
+    }catch(e){ snd[kind + 'Ok'] = false; return false; }
+  }
+
+  // iOS 需在用户手势里解锁音频：resume AudioContext + 把音效元素各播一次再暂停
   function unlockAudio(){
     var ac = audioCtx();
-    if (!ac) return;
-    if (ac.state === 'suspended'){ ac.resume().catch(function(){}); }
-    try{
-      var o = ac.createOscillator(), g = ac.createGain();
-      g.gain.value = 0.0001;
-      o.connect(g); g.connect(ac.destination);
-      o.start(); o.stop(ac.currentTime + 0.02);
-    }catch(e){}
+    if (ac){
+      if (ac.state === 'suspended'){ ac.resume().catch(function(){}); }
+      try{
+        var o = ac.createOscillator(), g = ac.createGain();
+        g.gain.value = 0.0001;
+        o.connect(g); g.connect(ac.destination);
+        o.start(); o.stop(ac.currentTime + 0.02);
+      }catch(e){}
+    }
+    makeSnd();
+    // 静音试播一次即完成 iOS 的媒体解锁，不给用户造成额外噪声
+    Object.keys(snd).forEach(function(k){
+      if (k.indexOf('Ok') >= 0) return;
+      var a = snd[k];
+      if (!a || typeof a.play !== 'function') return;
+      var baseVol = (k === 'alarm') ? 1.0 : 0.85;
+      try{
+        try{ a.volume = 0; }catch(e){}
+        try{ a.currentTime = 0; }catch(e){}
+        var p = a.play();
+        if (p && p.then){
+          p.then(function(){
+            snd[k + 'Ok'] = true;
+            setTimeout(function(){ try{ a.pause(); a.currentTime = 0; }catch(e){} try{ a.volume = baseVol; }catch(e){} }, 40);
+          }).catch(function(){ snd[k + 'Ok'] = false; try{ a.volume = baseVol; }catch(e){} });
+        }
+      }catch(e){ snd[k + 'Ok'] = false; try{ a.volume = baseVol; }catch(e){} }
+    });
   }
+
+  // 回到前台后恢复音频上下文
+  document.addEventListener('visibilitychange', function(){
+    if (document.hidden) return;
+    var ac = audioCtx();
+    if (ac && ac.state !== 'running'){ try{ ac.resume().catch(function(){}); }catch(e){} }
+  });
+
+  // 首次任意触摸/点击即解锁音频（iOS 授权要求手势上下文）
+  document.addEventListener('touchstart', function(){ unlockAudio(); }, { passive:true, once:true });
+  document.addEventListener('click', function(){ unlockAudio(); }, { once:true });
 
   function beep(freq, dur, vol){
     if (audio.muted) return;
+    var kind = freq >= 1100 ? 'alarm' : 'warn';
+    // 主通道：<audio> 元素（iOS 静音键下也能响）
+    if (playSnd(kind)) {
+      // 起播若被拒（iOS 尚未解锁等），立即用 WebAudio 补一声，不等下一拍
+      var a = snd[kind];
+      if (a && snd[kind + 'Ok'] === false) webBeep(freq, dur, vol);
+      return;
+    }
+    // 备份通道：WebAudio（桌面浏览器 / <audio> 不可用时）
+    webBeep(freq, dur, vol);
+  }
+
+  function webBeep(freq, dur, vol){
     var ac = audioCtx();
     if (!ac) return;
-    if (ac.state === 'suspended'){ ac.resume().catch(function(){}); }
+    if (ac.state === 'suspended'){ try{ ac.resume().catch(function(){}); }catch(e){} }
     var t = ac.currentTime;
     var o = ac.createOscillator(), g = ac.createGain();
     o.type = 'square';
@@ -405,16 +502,18 @@
     if (audio.muted || j.level === 'safe'){ beatIdx = 0; return; }
     var now = Date.now();
     if (j.level === 'alarm'){
-      var gap = beatIdx >= 3 ? 780 : 175;
+      var gap = beatIdx >= 3 ? 700 : 170;
       if (now - beatLast >= gap){
         beatLast = now;
+        var newRound = beatIdx >= 3 || beatIdx === 0;
         beatIdx = beatIdx >= 3 ? 1 : beatIdx + 1;
-        beep(1250, 0.075, 0.27);
+        beep(1250, 0.09, 0.36);
+        if (newRound) vibrate([45,60,45,60,45]);
       }
     } else {
       if (now - beatLast >= 560){
         beatLast = now;
-        beep(880, 0.09, 0.15);
+        beep(880, 0.09, 0.2);
       }
     }
   }, 30);
@@ -503,10 +602,16 @@
     listening = true;
     state.running = true;
     unlockAudio();   // 借用户点击手势解锁音频
+    // 启用后立即试听两声，现场确认声音通道是否可用
+    setTimeout(function(){
+      unlockAudio();
+      beep(1250, 0.09, 0.36);
+      setTimeout(function(){ beep(1250, 0.09, 0.36); }, 210);
+    }, 300);
     window.addEventListener('deviceorientation', onOrientation, true);
     window.addEventListener('devicemotion', onMotion, true);
     elStatus.className = 'status on';
-    elHint.textContent = '已启用：超过接近角 19° 或离去角 21° 会「嘀嘀嘀」报警；测通过角时请勿校准，保持绝对倾角';
+    elHint.textContent = '已启用：超出接近角 ' + APPROACH + '° / 离去角 ' + DEPARTURE + '° 时小球闪烁并「嘀嘀嘀」。若刚没听到试听声，请关闭手机侧边静音键并把媒体音量调大';
     setTimeout(function(){
       if (!state.running) return;
       if (Date.now() - lastEvent > 2500 && state.mode === 'none'){
@@ -594,10 +699,10 @@
     audio.muted = !audio.muted;
     this.textContent = audio.muted ? '🔇' : '🔔';
     this.classList.toggle('off', audio.muted);
-    if (!audio.muted) beep(1180, 0.09, 0.18);
+    if (!audio.muted){ beep(1180, 0.09, 0.3); setTimeout(function(){ beep(1180, 0.09, 0.3); }, 200); }
     elHint.textContent = audio.muted
-      ? '声音已关闭，超限仅蜂鸣关闭 + 闪屏/震动提示'
-      : '声音已开启，超过接近角 / 离去角将「嘀嘀嘀」报警';
+      ? '声音已关闭，超限仅闪屏 + 震动提示'
+      : '声音已开启（已试听两声）。若听不到：关闭手机侧边静音键、调大媒体音量后重开一次';
   });
 
   $('btnFlip').addEventListener('click', function(){
