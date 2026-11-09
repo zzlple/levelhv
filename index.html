@@ -171,6 +171,24 @@
     .gauge-wrap{width:min(46vh,74vw,320px);height:min(46vh,74vw,320px)}
     .readouts{max-width:440px}
   }
+  /* 顶部拦截横幅：坡上开机自动校准 / 坡上手动校准 后强制提示（报警在此期间暂停） */
+  #banner{display:none;margin:0 0 10px;padding:10px 12px;border-radius:12px;
+    border:1px solid rgba(255,140,60,.55);background:linear-gradient(180deg,rgba(255,120,40,.20),rgba(255,60,60,.10));
+    color:#ffd9b8;font-size:12px;line-height:1.6;letter-spacing:.02em}
+  #banner.show{display:block;animation:bannerPulse 1.7s ease-in-out infinite}
+  @keyframes bannerPulse{0%,100%{border-color:rgba(255,140,60,.45)}50%{border-color:rgba(255,90,60,.95)}}
+  #banner b{color:#ff9455}
+  #banner .acts{display:flex;gap:8px;margin-top:9px}
+  #banner .acts button{flex:1 1 0;min-height:36px;padding:7px 10px;font-size:12px;border-radius:9px}
+
+  /* 坡度线说明行 */
+  .lim-tip{margin-top:6px;font-size:9.5px;line-height:1.5;color:#7d8b9a;letter-spacing:.02em}
+
+  /* 纵向读数「测量暂停」角标：数值仍显示，但明确标注不参与报警 */
+  .v.paused{color:#ffb347}
+  .v.paused::after{content:"测量暂停";font-size:9px;font-style:normal;margin-left:6px;padding:1px 5px;border-radius:5px;
+    background:rgba(255,179,71,.16);border:1px solid rgba(255,179,71,.5);vertical-align:middle}
+
   @media (max-height:400px){
     .card .k{font-size:10px}
     button{min-height:44px;padding:10px 14px;font-size:13px}
@@ -184,6 +202,14 @@
     <div class="brand">水平仪 <small>LEVEL · 免签名网页版</small></div>
     <div class="status" id="status">待授权</div>
   </header>
+
+  <div id="banner">
+    <span id="bannerTxt"></span>
+    <div class="acts">
+      <button class="primary" id="btnBannerCal">平路重新校准</button>
+      <button id="btnBannerOk">仍然使用</button>
+    </div>
+  </div>
 
   <main>
     <div class="gauge-wrap">
@@ -210,6 +236,7 @@
           <span class="lim-tag" id="tagApp">接近 17°</span>
           <span class="lim-tag" id="tagDep">离去 19°</span>
         </div>
+        <div class="lim-tip" id="limTip">坡度预警线 · 对应接近角 / 离去角余量参考</div>
       </div>
       <div class="card total"><div class="k">合成倾角 TOTAL</div><div class="v" id="vTot">--<em>°</em></div></div>
     </div>
@@ -222,7 +249,7 @@
     <button class="ghost" id="btnFlip">↕ 车头↑</button>
     <button class="ghost" id="btnFull">全屏</button>
   </footer>
-  <div class="hint" id="hint">手机<b>平放</b>在车上、或<b>装在手机支架上（竖立、略后仰）都可以</b>：车停水平路面时点「校准置零」（或等自动校准），把当前姿态记为 0.00°，之后读到的就是纯坡度——支架那 15-30° 的安装倾角会被自动扣掉，不用特意取下来平放。默认上坡模式；荣放 20 款后保守限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留出前杠与排气管余量），到限位 70% 起雷达式递进「嘀嘀」预警，95% 或超过则直接长鸣</div>
+  <div class="hint" id="hint">手机<b>平放</b>在车上、或<b>装在手机支架上（竖立、略后仰）都可以</b>：车停水平路面时点「校准置零」（或等自动校准），把当前姿态记为 0.00°，之后读到的就是纯坡度——支架那 15-30° 的安装倾角会被自动扣掉，不用特意取下来平放。默认上坡模式。<b>两条线是坡度预警线</b>：上坡 17°（≈31% 坡）对应接近角 18.1°、下坡 19°（≈34% 坡）对应离去角 20.3°，各自留出前杠与排气管余量 —— <b>它只是坡度余量参考，不等于「能过 / 过不去」</b>（坑洼、载重、打滑都会让实际通过性更差，下坡还要看坡底是否有平顺过渡）。坡度到线的 70% 起雷达式递进「嘀嘀」预警、95% 或超过直接长鸣；车身持续加速或刹车时会自动暂停报警，避免把加速误当坡道</div>
 </div>
 
 <div id="gate">
@@ -244,6 +271,7 @@
   var elUpTag=$('limUpTag'), elDownTag=$('limDownTag');
   var elTagApp=$('tagApp'), elTagDep=$('tagDep');
   var elStatus=$('status'), elHint=$('hint'), gate=$('gate');
+  var elBanner=$('banner'), elBannerTxt=$('bannerTxt'), elLimTip=$('limTip');
 
   var state = {
     running:false,
@@ -263,6 +291,18 @@
     lastMag:0,            // 最近一帧加速度模长（原始单位，g 或 m/s²）
     nSample:0,            // 已接收的有效帧数
     _lastGrav:null,       // 最近一次重力向量，供校准复用
+    aDev:0,               // 最近一帧加速度模长偏离 1g 的比例（含线性加速度）
+    dynSince:0,           // 动态加速度首次超限时刻
+    dynClear:0,           // 动态加速度回落到正常之后持续恢复计时的起点
+    measPaused:false,     // 测量暂停：车身持续加速/刹车，纵向角真假难辨，此时冻结报警输出
+    calSuspect:false,     // 校准疑似在坡上完成，零点被坡度污染 → 报警暂停直到用户重校或明确忽略
+    susDeg:0,             // 疑似坡度污染量（度）
+    pauseWhy:'',          // 测量暂停的原因：'accel'=加速度模长超限 / 'cross'=姿态交叉校验超差
+    oriPitch:null,        // deviceorientation 的 beta（度），由陀螺融合得到，短期不受线性加速度污染
+    oriPitchS:0,          // 上者的一阶平滑
+    oriTs:0,              // 上者最后更新时间
+    oriBadSince:0,        // 交叉校验超差起始时刻
+    oriDev:null,          // 最近一次交叉校验偏差（度），null=无方向通道
     smooth:{x:0,y:0}
   };
 
@@ -297,6 +337,19 @@
   var VIEW_RATIO = 0.86;    // 限位线所在半径比例：气泡到达线 = 已达保守极限
   var LATERAL_REF = 30;     // 气泡横向满偏参考角（横向不做限位判定，仅作方向指示）
   var HEADING = 1;          // 1 = 手机顶部朝车头；-1 = 顶部朝车尾
+
+  /* ---- 深度整改常量 ---- */
+  // 车身动态加速度（线性加速度）判定：accelerationIncludingGravity 的模长一旦偏离 1g，
+  // 说明此刻的重力向量里混进了车的加速/刹车，纵向「俯仰」既可能是坡、也可能是加速度，无法区分。
+  var DYN_TOL    = 0.15;    // 模长偏离 1g 超过 15%（≈0.15g，约 1.5 m/s²）算持续加速/刹车
+  var DYN_ON_MS  = 600;     // 连续超限 0.6s 才冻结测量：过坎、单帧尖峰不该触发
+  var DYN_OFF_MS = 400;     // 回落到 7.5% 以下并持续 0.4s 才恢复测量，避免临界抖动来回切
+  // 交叉校验判据：0.3g 的刹车只能让重力模长偏离 4%（判不出来），却足以把纵向角顶偏 16°。
+  // deviceorientation 的 beta 由陀螺融合给出，短期不随线性加速度走 → 用它与加速度计解算的俯仰比对。
+  var ORI_DIFF = 5.0;       // 两者差值超过 5° 视为姿态被加速度污染
+  var ORI_HOLD = 500;       // 持续 0.5s 才暂停，避免姿态通道抖动误触发
+  // 坡上开机拦截：校准时的「偏离量」超过该值 → 判定疑似停在坡上，报警默认不启用
+  var SUSPECT_DEG = 3;
 
   /* -------------------- 姿态解算 -------------------- */
   // 屏幕方向角（0/90/180/270），语义统一为「屏幕内容顺时针旋转角」，与 screen.orientation.angle 一致
@@ -562,10 +615,15 @@
   // 分级：<70% 限位为安全（静音、不变色）；70%~95% 雷达递进预警；≥95% 直接长鸣
   var WARN_RATIO  = 0.70;
   var ALARM_RATIO = 0.95;
+  // 角度 → 坡度百分比（tan）：17° ≈ 30.6% 坡、19° ≈ 34.4% 坡，便于和路牌「xx% 坡」直接对照
+  function slopePct(deg){ return Math.round(Math.tan(deg * Math.PI / 180) * 100); }
+
   function grade(hp){
     // 符号对应关系（改前写反，导致上坡一路静音）：
     //   hp > 0 = 车头方向抬起 = 上坡 → 最先蹭地的是车头前悬 → 受「接近角」约束
     //   hp < 0 = 车头方向下沉 = 下坡 → 最先蹭地的是车尾后悬 → 受「离去角」约束
+    // 注意语义：这里的 APPROACH / DEPARTURE 只是「坡度预警线」——对应接近角 / 离去角还剩下的余量，
+    // 不是「能过 / 过不去」的判定。真实通过性还取决于坡面坑洼、载重、轮胎打滑、前悬高度等。
     var lim   = hp >= 0 ? APPROACH : DEPARTURE;
     var which = hp >= 0 ? 'app' : 'dep';
     var ratio = Math.abs(hp) / lim;
@@ -585,17 +643,23 @@
     var downLimit = HEADING === 1 ? DEPARTURE : APPROACH;
     elLimUp.style.top   = 'calc(50% + ' + (-rMax * VIEW_RATIO).toFixed(1) + 'px)';
     elLimDown.style.top = 'calc(50% + ' + ( rMax * VIEW_RATIO).toFixed(1) + 'px)';
-    elUpTag.textContent   = upLimit + '° ' + (HEADING === 1 ? '接近角' : '离去角');
-    elDownTag.textContent = downLimit + '° ' + (HEADING === 1 ? '离去角' : '接近角');
-    elTagApp.textContent = '接近 ' + APPROACH + '°';
-    elTagDep.textContent = '离去 ' + DEPARTURE + '°';
+    // 语义正名：这两条线是「坡度预警线」，不是通过性判定。
+    // 17° / 19° 取自接近角 18.1° / 离去角 20.3° 留出前杠与排气管余量，是「坡度上的余量参考」。
+    elUpTag.textContent   = upLimit + '° 坡度线';
+    elDownTag.textContent = downLimit + '° 坡度线';
+    elTagApp.textContent = '坡度线 ' + APPROACH + '°';
+    elTagDep.textContent = '坡度线 ' + DEPARTURE + '°';
+    if (elLimTip){
+      elLimTip.textContent = '坡度预警线：上坡 ' + APPROACH + '°≈' + slopePct(APPROACH) + '% 坡 / 下坡 '
+        + DEPARTURE + '°≈' + slopePct(DEPARTURE) + '% 坡（接近角 / 离去角余量参考，非通过性判定）';
+    }
     // 盘面框型提示：随车头朝向对调上坡 / 下坡
     elSlopeUp.textContent   = HEADING === 1 ? '上坡' : '下坡';
     elSlopeDown.textContent = HEADING === 1 ? '下坡' : '上坡';
   }
 
   /* -------- 声光节奏：雷达式递进 + 逼近长鸣 -------- */
-  var beatLast = 0, beatIdx = 0, longOn = false;
+  var beatLast = 0, beatIdx = 0, longOn = false, pauseBeat = 0;
 
   // 递进预警：越靠近限位，音高越高、间隔越短（像倒车雷达）
   function warnTick(r){
@@ -653,6 +717,22 @@
   setInterval(function(){
     // 后台 / 未启用 / 暂停时不发声；暂停必须在进入后台那一刻就把长鸣掐掉，否则会一直响到切回前台
     if (!state.running || state.paused){
+      stopLong(); beatLast = 0; beatIdx = 0; resetLevel();
+      return;
+    }
+    // 车身持续加速/刹车 → 重力向量被线性加速度污染，纵向角既可能是坡也可能是加速度，无法区分。
+    // 此时冻结报警输出（不递进、不长鸣），只保留状态栏与「测量暂停」角标，避免把加速喊成坡道报警。
+    if (state.measPaused){
+      stopLong(); beatLast = 0; beatIdx = 0; resetLevel();
+      if (Date.now() - pauseBeat >= 1600){
+        pauseBeat = Date.now();
+        if (!audio.muted) beep(520, 0.045, 0.22);
+        vibrate(8);
+      }
+      return;
+    }
+    // 校准疑似在坡上完成：零点已被坡度污染，报警一律不启用，直到用户平路重校或明确忽略
+    if (state.calSuspect){
       stopLong(); beatLast = 0; beatIdx = 0; resetLevel();
       return;
     }
@@ -717,6 +797,8 @@
     // 侧立奇点：横向/纵向数学上都不可测，两个读数一起置灰（改前只灰横向、纵向默默归零，表现不一致）
     toggleCls(elLat, 'frozen', state.upright, 'latFrozen');
     toggleCls(elLon, 'frozen', state.upright, 'lonFrozen');
+    // 测量暂停：数值照常显示，但打上「测量暂停」角标 —— 用户必须能看出这一刻读数不作数
+    toggleCls(elLon, 'paused', state.measPaused && !state.upright, 'lonPaused');
 
     // 气泡位置：纵向按各自的限位角归一化，到达限位线即超限；横向不做限位判定，仅作方向指示
     var upLimit   = HEADING === 1 ? APPROACH  : DEPARTURE;
@@ -724,9 +806,11 @@
     var lonLimit  = lon >= 0 ? upLimit : downLimit;
     var nx = Math.max(-1, Math.min(1, (lat / LATERAL_REF) * VIEW_RATIO));
     var ny = Math.max(-1, Math.min(1, (-lon / lonLimit) * VIEW_RATIO));  // 顶部抬起 → 气泡上移（屏幕上方 = 上坡方向）
-    // 平滑
-    state.smooth.x += (nx - state.smooth.x) * 0.25;
-    state.smooth.y += (ny - state.smooth.y) * 0.25;
+    // 平滑（测量暂停期间冻结气泡位置：刹车瞬间重力方向乱跳，气泡跟着飞比停住更误导）
+    if (!state.measPaused){
+      state.smooth.x += (nx - state.smooth.x) * 0.25;
+      state.smooth.y += (ny - state.smooth.y) * 0.25;
+    }
 
     elBubble.style.transform = 'translate(-50%,-50%) translate(' +
       (state.smooth.x * gaugeRMax).toFixed(1) + 'px,' + (state.smooth.y * gaugeRMax).toFixed(1) + 'px)';
@@ -737,7 +821,7 @@
 
     // 接近角 / 离去角 分级：按相对倾角占限位的比例，70% 起预警、95% 起长鸣
     // 侧立奇点姿态下纵向角无意义，此时不做通过角判定，避免拿起手机就误长鸣
-    var j = state.upright
+    var j = (state.upright || state.measPaused || state.calSuspect)
       ? { level:'safe', which: relPitch() >= 0 ? 'app' : 'dep', ratio:0, lim:0 }
       : grade(relPitch());
     var alarm = j.level === 'alarm';
@@ -769,6 +853,126 @@
     return confirmed ? 1 : k;
   }
 
+  /* -------------------- 深度整改：坡上拦截 / 加速度冻结 / 安装角基线 -------------------- */
+  // 支架安装角基线：手机在支架上的固定姿态（跨会话保留）。有了它，「偏离水平面 20-30°」这种正常
+  // 安装角就不会被误判成坡；只有「偏离安装角基线」才说明车确实停在坡上。
+  var mountBase = { lat:null, lon:null };
+  try{
+    var _mb = localStorage.getItem('level.mountBase.v1');
+    if (_mb){
+      var _mo = JSON.parse(_mb);
+      if (_mo && isFinite(_mo.lat) && isFinite(_mo.lon)){
+        mountBase.lat = +_mo.lat; mountBase.lon = +_mo.lon;
+      }
+    }
+  }catch(e){}
+
+  function saveMountBase(){
+    try{ localStorage.setItem('level.mountBase.v1', JSON.stringify({ lat:mountBase.lat, lon:mountBase.lon })); }catch(e){}
+  }
+  function learnMountBase(lat, lon){
+    if (mountMode !== 'stand') return;            // 平放态没有安装角，不建基线
+    if (mountBase.lat === null || mountBase.lon === null){
+      mountBase.lat = lat; mountBase.lon = lon; saveMountBase(); return;
+    }
+    var d = Math.sqrt((lat - mountBase.lat) * (lat - mountBase.lat) + (lon - mountBase.lon) * (lon - mountBase.lon));
+    if (d < 1.5){                                 // 与历史基线一致 → 慢速滚动平均，抗单次装夹误差
+      mountBase.lat = mountBase.lat * 0.8 + lat * 0.2;
+      mountBase.lon = mountBase.lon * 0.8 + lon * 0.2;
+      saveMountBase();
+    }
+  }
+  // 用户点「仍然使用」= 明确认可「此刻的零点就是安装角，不是坡」→ 把当前姿态写回基线
+  function forceMountBase(){
+    if (mountMode !== 'stand') return;
+    mountBase.lat = state.calLat; mountBase.lon = state.calLon;
+    saveMountBase();
+  }
+  // 「残留坡度」：平放态 = 相对水平面的合成角；支架态 = 相对安装角基线的偏差（无基线时退回合成角）
+  function mountResid(lat, lon, tot){
+    if (mountMode === 'stand'){
+      // 支架上一开机就是 20-30° 的安装角，没有基线就无法区分「安装角」与「坡」→ 首装不判定，只学习基线
+      if (mountBase.lat === null || mountBase.lon === null) return 0;
+      return Math.sqrt((lat - mountBase.lat) * (lat - mountBase.lat) + (lon - mountBase.lon) * (lon - mountBase.lon));
+    }
+    return tot;
+  }
+
+  function suspendAlarm(deg, how, mount){
+    state.calSuspect = true;
+    state.susDeg = deg;
+    var act = (how === 'auto') ? '开机自动校准' : '本次校准';
+    var why = (mount === 'stand')
+      ? act + '读到的安装角比平时偏了 ' + deg.toFixed(1) + '°，很可能是车停在坡上，零点把这段坡度一并扣成了 0°。'
+      : act + '时车身偏离水平面 ' + deg.toFixed(1) + '°，很可能是车停在坡上，零点已被坡度吃掉，之后读到的坡度都会偏小 ' + deg.toFixed(1) + '°。';
+    elBannerTxt.innerHTML = '⚠ <b>疑似停在坡上</b>：' + why
+      + ' 此刻的坡度与预警<b>不可信，报警已暂停</b>。请把车停到平路后点「平路重新校准」；'
+      + '若确认这段坡短且缓，可点「仍然使用」自行担责继续用。';
+    elBanner.classList.add('show');
+  }
+  function clearSuspend(){
+    state.calSuspect = false;
+    state.susDeg = 0;
+    elBanner.classList.remove('show');
+  }
+
+  function pauseMeasure(why){
+    state.pauseWhy = why;
+    if (state.measPaused) return;
+    state.measPaused = true;
+    stopLong(); resetLevel(); beatLast = 0; beatIdx = 0;
+  }
+  function resumeMeasure(){
+    state.measPaused = false; state.pauseWhy = '';
+    state.dynSince = 0; state.dynClear = 0; state.oriBadSince = 0;
+    resetLevel();
+  }
+
+  // 姿态交叉校验：把 deviceorientation 的俯仰折算到「与坡度同号的刻度」后，与加速度计解算的
+  // 纵向角比对。平放族两者同号（斜率 +1）；支架竖立族 beta 与坡度反号（斜率 -1，见竖立坐标系）。
+  // 固定偏置（安装角 / 90° 常数）由 oriBias 慢速学习吸收，只把「突然多出来的差」当污染。
+  var oriBias = null, lastMountForOri = '';
+  function crossCheck(){
+    var now = Date.now();
+    if (state.oriPitch === null || now - state.oriTs > 600) return null;   // 没有方向通道 → 不判定
+    if (state.upright) return null;                                        // 侧立时 orientation 也不可信
+    if (mountMode !== lastMountForOri){ lastMountForOri = mountMode; oriBias = null; }
+    var slope = (mountMode === 'stand') ? -1 : 1;
+    var dev = state.absLon - slope * state.oriPitchS;
+    if (oriBias === null){ oriBias = dev; return 0; }
+    var d = dev - oriBias;
+    if (Math.abs(d) < 2.0 && !state.measPaused){
+      oriBias += d * 0.01;     // 对齐良好时极慢地更新固定偏置（约 100 帧时间常数，扛得住短暂刹车）
+      return 0;
+    }
+    return d;
+  }
+
+  // 动态判定（双判据）：
+  //   硬判据 = 加速度模长偏离 1g → 急加速 / 急刹 / 大颠簸
+  //   软判据 = 姿态交叉校验超差 → 中等力度持续刹车（模长几乎不变，但纵向角被顶偏十几度）
+  function updateDyn(aDev, oriDev){
+    var now = Date.now();
+    if (aDev > DYN_TOL){
+      if (!state.dynSince) state.dynSince = now;
+      if (now - state.dynSince >= DYN_ON_MS) pauseMeasure('accel');
+    } else {
+      state.dynSince = 0;
+    }
+    if (oriDev !== null && Math.abs(oriDev) > ORI_DIFF){
+      if (!state.oriBadSince) state.oriBadSince = now;
+      if (now - state.oriBadSince >= ORI_HOLD) pauseMeasure('cross');
+    } else {
+      state.oriBadSince = 0;
+    }
+    if (state.measPaused && (aDev < DYN_TOL * 0.5) && (oriDev === null || Math.abs(oriDev) < ORI_DIFF * 0.5)){
+      if (!state.dynClear) state.dynClear = now;
+      if (now - state.dynClear >= DYN_OFF_MS) resumeMeasure();
+    } else if (state.measPaused){
+      state.dynClear = 0;
+    }
+  }
+
   function update(grav){
     var p = project(grav);
     state.nSample++;
@@ -790,6 +994,8 @@
       q = q < 0 ? 0 : (q > 1 ? 1 : q);
     }
     state.quality = q;
+    state.aDev = (state.lastMag > 0 && isFinite(state.lastMag))
+      ? Math.abs((state.lastMag > 3 ? state.lastMag / 9.80665 : state.lastMag) - 1) : 0;
 
     // 横向与纵向走同一套低通：纵向直接参与通过角报警，绝不能再拿单帧值。
     // 干净数据下大幅真实倾斜（>JUMP_DEG）直通保证响应速度，其余情况按 q 调节系数平滑。
@@ -815,6 +1021,11 @@
     var dLatC = state.absLat - calLat, dLonC = state.absLon - calLon;
     state.tot = Math.sqrt(dLatC * dLatC + dLonC * dLonC);
 
+    // 车身持续加速/刹车 → 冻结纵向报警（这是「刹车当坡度」的根治手段，比压低通滤波率更彻底）
+    var oriDev = crossCheck();
+    state.oriDev = oriDev;
+    updateDyn(state.aDev, oriDev);
+
     render();
   }
 
@@ -834,6 +1045,21 @@
       return;
     }
     if (idle > 1200) return;                  // 短暂静默（静止时的采样优化）不刷，避免来回跳
+    if (state.measPaused){
+      var pTxt = state.pauseWhy === 'cross' ? '测量暂停·姿态超差' : '测量暂停·车身加速';
+      if (elStatus.textContent !== pTxt){
+        elStatus.className = 'status err';
+        elStatus.textContent = pTxt;
+      }
+      return;
+    }
+    if (state.calSuspect){
+      if (elStatus.textContent !== '待平路重校'){
+        elStatus.className = 'status err';
+        elStatus.textContent = '待平路重校';
+      }
+      return;
+    }
     var t = state.mode === 'motion' ? '重力模式'
           : (state.mode === 'orientation' ? '方向模式' : '等待传感器');
     // 姿态标签：手机平放和装在支架上（竖立）用的是两套解算轴，标出来便于确认识别正确
@@ -861,6 +1087,12 @@
     // (1) 竖立开局时加速度计判不出符号，需要它做交叉校验；
     // (2) 方向模式兜底公式本身要用 alpha/beta/gamma。
     state.lastBeta = (typeof e.beta === 'number') ? e.beta : null;
+    // 同时留存一份「陀螺融合俯仰」供加速度计做交叉校验（不受线性加速度污染）
+    if (typeof e.beta === 'number'){
+      state.oriTs = Date.now();
+      if (state.oriPitch === null){ state.oriPitch = e.beta; state.oriPitchS = e.beta; }
+      else { state.oriPitch = e.beta; state.oriPitchS += (e.beta - state.oriPitchS) * 0.2; }
+    }
     var raw = state.rawUnit;
     // 只在加速度计自己还判不出符号时补判（gzSign===0），不覆盖已锁定的结论，
     // 否则两个通道姿态不同步时会把正确符号改坏。
@@ -991,6 +1223,17 @@
     }
     state.hasCal = true;
 
+    // 坡上校准拦截：先把「支架安装角」与「真实坡度」分开，再看这段坡度是不是被一起扣掉了
+    if (!upright){
+      var resid = mountResid(state.calLat, state.calLon, tiltNow);
+      if (resid > SUSPECT_DEG){
+        suspendAlarm(resid, silent ? 'auto' : 'manual', mountMode);
+      } else {
+        clearSuspend();
+        learnMountBase(state.calLat, state.calLon);
+      }
+    }
+
     if (!silent){
       vibrate(20);
       if (upright){
@@ -1009,12 +1252,27 @@
 
   $('btnCal').addEventListener('click', function(){ calibrate(false); });
 
+  // 横幅：平路重校（重跑一次手动校准，若还在坡上会再次被拦）
+  $('btnBannerCal').addEventListener('click', function(){ calibrate(false); });
+  // 横幅：明确忽略 —— 报警恢复，并把当前姿态认作安装角基线（下次同样的姿态不再被拦）
+  $('btnBannerOk').addEventListener('click', function(){
+    var deg = state.susDeg;
+    forceMountBase();
+    clearSuspend();
+    resetLevel();
+    vibrate(12);
+    elHint.textContent = '已忽略坡上提示，报警恢复。读数仍以本次零点为基准，坡度整体偏小 ' + deg.toFixed(1)
+      + '° —— 下坡前请自行目测确认坡长与坡底状况';
+    if (state._lastGrav) update(state._lastGrav);
+  });
+
   $('btnReset').addEventListener('click', function(){
     state.hasCal = false;
     state.calLat = 0;
     state.calLon = 0;
     vibrate(12);
-    elHint.textContent = '校准已重置，读数回到绝对倾角';
+    clearSuspend();                                                   // 重置同时解除坡上拦截
+    elHint.textContent = '校准已重置，读数回到绝对倾角（报警按绝对倾角判定，仅作排障用）';
     resetLevel();                                                     // 清零报警去抖状态，避免残留档位
     if (state._lastGrav) update(state._lastGrav);                     // 立即按绝对倾角刷新
   });
@@ -1091,13 +1349,25 @@
       state.absLat = state.calLat;
       state.absLon = state.calLon;
       var avgTot = autoCalTot / autoCalN;
-      // 支架竖立时「偏离水平面 20-30°」是安装角，不是坡道，不能按坡道报警去提示
-      elHint.textContent = (mountMode === 'stand')
-        ? '已自动校准置零：按支架安装角约 ' + avgTot.toFixed(0) + '° 整体记为 0.00°，之后读到的就是纯坡度。'
-          + '若打开页面这一刻车正停在坡上，零点会被一起扣掉，挪到平路点一次「校准置零」即可'
-        : (avgTot > 3
-          ? '已自动校准置零：启动时车身并不水平（偏离约 ' + avgTot.toFixed(1) + '°，可能停在上坡），零点已被带偏。请把车停到平地后点「校准置零」重校'
-          : '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」');
+      var avgLat = state.calLat, avgLon = state.calLon;
+      // 支架竖立时「偏离水平面 20-30°」是正常安装角，不是坡：先扣掉历史安装角基线，剩下的才是真实坡度
+      var resid = mountResid(avgLat, avgLon, avgTot);
+      if (resid > SUSPECT_DEG){
+        // 关键整改：改前这里只是写一句 hint 文案，零点照样生效、报警照样启用 → 坡上开机等于漏报一整段
+        suspendAlarm(resid, 'auto', mountMode);
+        elHint.textContent = (mountMode === 'stand')
+          ? '已自动校准置零，但本次安装角比平时偏了约 ' + resid.toFixed(1) + '°：很可能是车停在坡上，零点把坡度一起扣掉了。'
+            + '报警已暂停，请停到平路后点「平路重新校准」'
+          : '已自动校准置零，但开机时车身偏离水平面约 ' + resid.toFixed(1) + '°：很可能车停在坡上，零点已被坡度带偏，'
+            + '之后读数会偏小 ' + resid.toFixed(1) + '°，预警会漏报。报警已暂停，请停到平路后点「平路重新校准」';
+      } else {
+        clearSuspend();
+        learnMountBase(avgLat, avgLon);
+        elHint.textContent = (mountMode === 'stand')
+          ? '已自动校准置零：按支架安装角约 ' + avgTot.toFixed(0) + '° 整体记为 0.00°，之后读到的就是纯坡度。'
+            + '若哪天挪了支架角度，点一次「校准置零」重学安装角即可'
+          : '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
+      }
       _update(state._lastGrav);   // 让新零点立即生效，不必等下一帧
     }
   };
@@ -1145,7 +1415,15 @@
       tagApp: elTagApp.classList.contains('on'),
       tagDep: elTagDep.classList.contains('on'),
       frozenLat: elLat.classList.contains('frozen'),
-      frozenLon: elLon.classList.contains('frozen')
+      frozenLon: elLon.classList.contains('frozen'),
+      // 深度整改新增
+      aDev: state.aDev, measPaused: state.measPaused, dynSince: state.dynSince,
+      pauseWhy: state.pauseWhy, oriDev: state.oriDev, oriPitchS: state.oriPitchS, oriBias: oriBias,
+      calSuspect: state.calSuspect, susDeg: state.susDeg,
+      mountBaseLat: mountBase.lat, mountBaseLon: mountBase.lon,
+      bannerShown: elBanner.classList.contains('show'),
+      lonPaused: elLon.classList.contains('paused'),
+      slopePctApp: slopePct(APPROACH), slopePctDep: slopePct(DEPARTURE)
     };
   };
 
