@@ -96,6 +96,19 @@
   @media (max-width:430px){ footer{gap:6px} button.ghost{padding:12px 9px;font-size:12px} }
   .hint{font-size:11px;color:var(--dim);text-align:center;line-height:1.5}
 
+  /* ---------- 盘面 上坡 / 下坡 框型提示 ---------- */
+  .slope-tag{position:absolute;left:50%;transform:translateX(-50%);
+    font-size:11px;font-weight:700;letter-spacing:.16em;line-height:1;
+    padding:4px 10px;border-radius:7px;white-space:nowrap;pointer-events:none;
+    border:1px solid rgba(120,200,255,.5);color:#9ed8ff;background:rgba(6,10,16,.78);
+    box-shadow:0 0 10px rgba(0,0,0,.35);
+    opacity:0;transition:opacity .2s,color .2s,border-color .2s,background .2s}
+  .slope-tag.up{top:8%}
+  .slope-tag.down{bottom:8%;border-color:rgba(255,197,61,.5);color:#ffcf70}
+  .gauge.show-slope .slope-tag{opacity:1}
+  .slope-tag.hit{border-color:#ff3b3b;color:#fff;background:rgba(120,0,0,.82);
+    box-shadow:0 0 14px rgba(255,59,59,.6)}
+
   /* ---------- 接近角 / 离去角 限位线 ---------- */
   .limit-line{position:absolute;left:9%;right:9%;height:0;
     border-top:1.5px dashed rgba(255,110,110,.7);pointer-events:none;
@@ -171,6 +184,8 @@
         <div class="limit-line down" id="limDown"><span id="limDownTag">17° 接近角</span></div>
         <div class="needle" id="needle"></div>
         <div class="bubble" id="bubble"><div class="gauge-val"><b id="gv">--</b><span>LON °</span></div></div>
+        <div class="slope-tag up" id="slopeUp">上坡</div>
+        <div class="slope-tag down" id="slopeDown">下坡</div>
       </div>
     </div>
 
@@ -211,6 +226,7 @@
   var elBubble=$('bubble'), elNeedle=$('needle'), elGv=$('gv');
   var elLat=$('vLat'), elLon=$('vLon'), elTot=$('vTot');
   var elGauge=$('gauge'), elLimUp=$('limUp'), elLimDown=$('limDown');
+  var elSlopeUp=$('slopeUp'), elSlopeDown=$('slopeDown');
   var elUpTag=$('limUpTag'), elDownTag=$('limDownTag');
   var elTagApp=$('tagApp'), elTagDep=$('tagDep');
   var elStatus=$('status'), elHint=$('hint'), gate=$('gate');
@@ -377,6 +393,9 @@
     elDownTag.textContent = downLimit + '° ' + (HEADING === 1 ? '接近角' : '离去角');
     elTagApp.textContent = '接近 ' + APPROACH + '°';
     elTagDep.textContent = '离去 ' + DEPARTURE + '°';
+    // 盘面框型提示：随车头朝向对调上坡 / 下坡
+    elSlopeUp.textContent   = HEADING === 1 ? '上坡' : '下坡';
+    elSlopeDown.textContent = HEADING === 1 ? '下坡' : '上坡';
   }
 
   // 嘀嘀嘀：超限 = 三连急响后停顿；预警 = 慢速单响
@@ -437,6 +456,12 @@
     elLimDown.classList.toggle('hit', alarm && j.which === 'app');
     elTagDep.classList.toggle('on', j.level !== 'safe' && j.which === 'dep');
     elTagApp.classList.toggle('on', j.level !== 'safe' && j.which === 'app');
+    // 盘面上坡/下坡框：超限时对应方向变红
+    var upIsDep = HEADING === 1;   // 顶部朝车头时，屏幕上坡 = 离去角
+    elSlopeUp.classList.toggle('hit',
+      alarm && ((j.which === 'dep' && upIsDep) || (j.which === 'app' && !upIsDep)));
+    elSlopeDown.classList.toggle('hit',
+      alarm && ((j.which === 'app' && upIsDep) || (j.which === 'dep' && !upIsDep)));
     if (alarm && Date.now() - state.lastVibe > 400){
       state.lastVibe = Date.now();
       vibrate([45, 55, 45, 55, 45]);
@@ -579,10 +604,11 @@
     HEADING = -HEADING;
     this.textContent = HEADING === 1 ? '↕ 车头↑' : '↕ 车头↓';
     layoutLimits();
+    elGauge.classList.add('show-slope');   // 首次点击后盘面出现上坡/下坡框型提示
     vibrate(15);
     elHint.textContent = HEADING === 1
-      ? '当前设定：手机顶部朝向车头，屏幕向上 = 车头上坡（离去角约束）'
-      : '当前设定：手机顶部朝向车尾，屏幕向上 = 车头下坡（接近角约束）';
+      ? '当前设定：手机顶部朝向车头，屏幕向上 = 上坡（离去角约束）'
+      : '当前设定：手机顶部朝向车尾，屏幕向上 = 下坡（接近角约束）';
   });
 
   $('btnFull').addEventListener('click', function(){
