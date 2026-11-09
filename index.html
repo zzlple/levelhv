@@ -295,6 +295,14 @@
     dynSince:0,           // 动态加速度首次超限时刻
     dynClear:0,           // 动态加速度回落到正常之后持续恢复计时的起点
     measPaused:false,     // 测量暂停：车身持续加速/刹车，纵向角真假难辨，此时冻结报警输出
+    pausedAt:0,           // 本次暂停起始时刻（fail-safe 超时用）
+    noPauseUntil:0,       // 冷静期截止：fail-safe 强制恢复后，短时间内不再被同一判据锁回去
+    flatSince:0,          // 坡上校准时，检测到车身回到水平路面的起始时刻
+    lowConf:false,        // 暂停超时被强制恢复 → 读数低置信（如实提示，不静默）
+    linMag:null,          // 最近一帧线性加速度模长（g），来自 e.acceleration
+    linTs:0,              // 线性加速度时间戳
+    linSince:0,           // 线性加速度首次超限时刻
+    linMagNow:null,       // 本帧生效值（超时未更新则为 null）
     calSuspect:false,     // 校准疑似在坡上完成，零点被坡度污染 → 报警暂停直到用户重校或明确忽略
     susDeg:0,             // 疑似坡度污染量（度）
     pauseWhy:'',          // 测量暂停的原因：'accel'=加速度模长超限 / 'cross'=姿态交叉校验超差
@@ -342,14 +350,20 @@
   // 车身动态加速度（线性加速度）判定：accelerationIncludingGravity 的模长一旦偏离 1g，
   // 说明此刻的重力向量里混进了车的加速/刹车，纵向「俯仰」既可能是坡、也可能是加速度，无法区分。
   var DYN_TOL    = 0.15;    // 模长偏离 1g 超过 15%（≈0.15g，约 1.5 m/s²）算持续加速/刹车
-  var DYN_ON_MS  = 600;     // 连续超限 0.6s 才冻结测量：过坎、单帧尖峰不该触发
+  var DYN_ON_MS  = 400;     // 连续超限 0.6s 才冻结测量：过坎、单帧尖峰不该触发
   var DYN_OFF_MS = 400;     // 回落到 7.5% 以下并持续 0.4s 才恢复测量，避免临界抖动来回切
-  // 交叉校验判据：0.3g 的刹车只能让重力模长偏离 4%（判不出来），却足以把纵向角顶偏 16°。
-  // deviceorientation 的 beta 由陀螺融合给出，短期不随线性加速度走 → 用它与加速度计解算的俯仰比对。
-  var ORI_DIFF = 5.0;       // 两者差值超过 5° 视为姿态被加速度污染
-  var ORI_HOLD = 500;       // 持续 0.5s 才暂停，避免姿态通道抖动误触发
+  // 【deep11】主判据改为线性加速度 e.acceleration（iOS 原生给出、重力已被扣除）：
+  // 0.3g 刹车时它能读到 ≈3 m/s²，而重力模长只偏离 4%（模长判据看不见），
+  // 但这点线性加速度足以把纵向角顶偏 16° 造成假报警 —— 主判据必须直接测它。
+  var LIN_TOL    = 0.10;    // 线性加速度超过 0.10g（≈1 m/s²）算车身在加速
+  var LIN_ON_MS  = 250;     // 连续 0.25s 才冻结：减速带单帧尖峰不触发
+  var LIN_OFF_MS = 300;     // 回落到 0.05g 并持续 0.3s 才恢复
+  // fail-safe：任何暂停最多持续这么久，超时强制恢复并降级为「低置信」。
+  // 报警不响比误报更危险，绝不允许某个判据异常把报警永久静默。
+  var MAX_PAUSE_MS = 2000;
+  var COOLDOWN_MS  = 1500;   // 强制恢复后的冷静期：期间不再因加速度判据暂停
   // 坡上开机拦截：校准时的「偏离量」超过该值 → 判定疑似停在坡上，报警默认不启用
-  var SUSPECT_DEG = 3;
+  var SUSPECT_DEG = 5;
 
   /* -------------------- 姿态解算 -------------------- */
   // 屏幕方向角（0/90/180/270），语义统一为「屏幕内容顺时针旋转角」，与 screen.orientation.angle 一致
@@ -731,11 +745,9 @@
       }
       return;
     }
-    // 校准疑似在坡上完成：零点已被坡度污染，报警一律不启用，直到用户平路重校或明确忽略
-    if (state.calSuspect){
-      stopLong(); beatLast = 0; beatIdx = 0; resetLevel();
-      return;
-    }
+    // 【deep11c】原「校准疑似在坡上 → 报警一律不启用」已删除。它是「坡上/车库开机后彻底不能用」的元凶：
+    // 零点带坡度只让读数整体偏小几度，属于精度损失，而整体禁用报警等于把安全功能关掉 ——
+    // 用户看到的就是「永远不报警、永远 0.00°」。现在改为照常测量、照常预警，横幅只做精度提示。
     var g = grade(relPitch());
     // 侧立奇点姿态下纵向角不可测 → 强制回到安全档，避免拿起手机就误长鸣
     var lv = debounceLevel(g, !state.upright);
@@ -806,11 +818,11 @@
     var lonLimit  = lon >= 0 ? upLimit : downLimit;
     var nx = Math.max(-1, Math.min(1, (lat / LATERAL_REF) * VIEW_RATIO));
     var ny = Math.max(-1, Math.min(1, (-lon / lonLimit) * VIEW_RATIO));  // 顶部抬起 → 气泡上移（屏幕上方 = 上坡方向）
-    // 平滑（测量暂停期间冻结气泡位置：刹车瞬间重力方向乱跳，气泡跟着飞比停住更误导）
-    if (!state.measPaused){
-      state.smooth.x += (nx - state.smooth.x) * 0.25;
-      state.smooth.y += (ny - state.smooth.y) * 0.25;
-    }
+    // 平滑。【deep11】暂停期间不再冻结气泡：上一版冻结后用户看到的是「数值一动不动」，
+    // 主观感受就是「程序坏了」。刹车瞬间重力向量偏移是真实现象，如实显示并打低置信角标，
+    // 比假装静止更诚实。
+    state.smooth.x += (nx - state.smooth.x) * 0.25;
+    state.smooth.y += (ny - state.smooth.y) * 0.25;
 
     elBubble.style.transform = 'translate(-50%,-50%) translate(' +
       (state.smooth.x * gaugeRMax).toFixed(1) + 'px,' + (state.smooth.y * gaugeRMax).toFixed(1) + 'px)';
@@ -821,7 +833,7 @@
 
     // 接近角 / 离去角 分级：按相对倾角占限位的比例，70% 起预警、95% 起长鸣
     // 侧立奇点姿态下纵向角无意义，此时不做通过角判定，避免拿起手机就误长鸣
-    var j = (state.upright || state.measPaused || state.calSuspect)
+    var j = (state.upright || state.measPaused)
       ? { level:'safe', which: relPitch() >= 0 ? 'app' : 'dep', ratio:0, lim:0 }
       : grade(relPitch());
     var alarm = j.level === 'alarm';
@@ -901,13 +913,23 @@
   function suspendAlarm(deg, how, mount){
     state.calSuspect = true;
     state.susDeg = deg;
+    // 【deep11d】零点改回「水平参照」：既然判定车此刻在坡上，就不该把这段坡也扣成 0°，
+    // 否则用户上电看到的是恒定的 0.00°，主观感受就是「程序挂了」。
+    // 平放族以真实水平面为零点；支架族用已学到的安装角基线（无基线时才无法区分）。
+    if (mount === 'stand'){
+      if (mountBase.lat !== null && mountBase.lon !== null){
+        state.calLat = mountBase.lat; state.calLon = mountBase.lon;
+      }
+    } else {
+      state.calLat = 0; state.calLon = 0;
+    }
     var act = (how === 'auto') ? '开机自动校准' : '本次校准';
     var why = (mount === 'stand')
-      ? act + '读到的安装角比平时偏了 ' + deg.toFixed(1) + '°，很可能是车停在坡上，零点把这段坡度一并扣成了 0°。'
-      : act + '时车身偏离水平面 ' + deg.toFixed(1) + '°，很可能是车停在坡上，零点已被坡度吃掉，之后读到的坡度都会偏小 ' + deg.toFixed(1) + '°。';
-    elBannerTxt.innerHTML = '⚠ <b>疑似停在坡上</b>：' + why
-      + ' 此刻的坡度与预警<b>不可信，报警已暂停</b>。请把车停到平路后点「平路重新校准」；'
-      + '若确认这段坡短且缓，可点「仍然使用」自行担责继续用。';
+      ? act + '读到的安装角比平时偏了 ' + deg.toFixed(1) + '°，说明车此刻停在坡上。'
+      : act + '时车身偏离水平面 ' + deg.toFixed(1) + '°，说明车此刻停在坡上。';
+    elBannerTxt.innerHTML = '⚠ <b>上电时车停在坡上（' + deg.toFixed(1) + '°）</b>：' + why
+      + ' 已按<b>水平面</b>作零点，所以现在显示的就是<b>真实车身倾角</b>，预警照常工作。'
+      + ' 开到平路会<b>自动重校</b>，也可点「平路重新校准」。';
     elBanner.classList.add('show');
   }
   function clearSuspend(){
@@ -917,59 +939,68 @@
   }
 
   function pauseMeasure(why){
+    // 冷静期：fail-safe 刚把测量强制恢复，若车身还在加速就立刻再暂停，用户看到的是「永久卡住」。
+    // 强制恢复后至少给 COOLDOWN_MS 的正常测量窗口，让数值和报警真正跑起来。
+    if (Date.now() < state.noPauseUntil) return;
     state.pauseWhy = why;
     if (state.measPaused) return;
     state.measPaused = true;
+    state.pausedAt = Date.now();
     stopLong(); resetLevel(); beatLast = 0; beatIdx = 0;
   }
   function resumeMeasure(){
     state.measPaused = false; state.pauseWhy = '';
-    state.dynSince = 0; state.dynClear = 0; state.oriBadSince = 0;
+    state.pausedAt = 0; state.oriBadSince = 0;
+    state.dynSince = 0; state.dynClear = 0; state.linSince = 0;
     resetLevel();
   }
 
-  // 姿态交叉校验：把 deviceorientation 的俯仰折算到「与坡度同号的刻度」后，与加速度计解算的
-  // 纵向角比对。平放族两者同号（斜率 +1）；支架竖立族 beta 与坡度反号（斜率 -1，见竖立坐标系）。
-  // 固定偏置（安装角 / 90° 常数）由 oriBias 慢速学习吸收，只把「突然多出来的差」当污染。
-  var oriBias = null, lastMountForOri = '';
-  function crossCheck(){
-    var now = Date.now();
-    if (state.oriPitch === null || now - state.oriTs > 600) return null;   // 没有方向通道 → 不判定
-    if (state.upright) return null;                                        // 侧立时 orientation 也不可信
-    if (mountMode !== lastMountForOri){ lastMountForOri = mountMode; oriBias = null; }
-    var slope = (mountMode === 'stand') ? -1 : 1;
-    var dev = state.absLon - slope * state.oriPitchS;
-    if (oriBias === null){ oriBias = dev; return 0; }
-    var d = dev - oriBias;
-    if (Math.abs(d) < 2.0 && !state.measPaused){
-      oriBias += d * 0.01;     // 对齐良好时极慢地更新固定偏置（约 100 帧时间常数，扛得住短暂刹车）
-      return 0;
-    }
-    return d;
-  }
+  // 【deep11】姿态交叉校验（crossCheck）已彻底移除 —— 它是上一版「完全无法使用」的根因：
+  //   它把「加速度计解算的纵向角 absLon」与「deviceorientation 的俯仰折算角」当同一刻度直接相减。
+  //   但两者参考系不同（beta 是绕设备 x 轴、含 90° 常数与安装角）、滤波时间常数也不同，
+  //   于是真实上坡、调整支架、驶入坡道这些「正常动作」都会让差值瞬间超过 5°，被判成姿态污染；
+  //   更致命的是暂停期间 oriBias 停止学习，差值再也回不到解冻门限，形成死锁。
+  //   实测：5° 缓坡即永久冻结（why=cross），车上永远在坡上 → 整机不可用。改用线性加速度判据。
+  var oriBias = null;   // 仅留给调试面板显示，不再参与任何判定
 
   // 动态判定（双判据）：
   //   硬判据 = 加速度模长偏离 1g → 急加速 / 急刹 / 大颠簸
   //   软判据 = 姿态交叉校验超差 → 中等力度持续刹车（模长几乎不变，但纵向角被顶偏十几度）
-  function updateDyn(aDev, oriDev){
+  function updateDyn(aDev, linMag){
     var now = Date.now();
-    if (aDev > DYN_TOL){
+    var linBad = (linMag !== null && linMag > LIN_TOL);
+    var magBad = (aDev > DYN_TOL);
+
+    // 主判据：线性加速度
+    if (linBad){
+      if (!state.linSince) state.linSince = now;
+      if (now - state.linSince >= LIN_ON_MS) pauseMeasure('accel');
+    } else state.linSince = 0;
+
+    // 兜底判据：重力模长偏离（acceleration 不可用时）
+    if (magBad){
       if (!state.dynSince) state.dynSince = now;
       if (now - state.dynSince >= DYN_ON_MS) pauseMeasure('accel');
+    } else state.dynSince = 0;
+
+    if (state.measPaused){
+      // fail-safe：超时强制恢复，宁可在低置信下继续报警，也不让报警永久哑掉
+      if (state.pausedAt && now - state.pausedAt >= MAX_PAUSE_MS){
+        state.measPaused = false; state.pauseWhy = '';
+        state.linSince = 0; state.dynSince = 0; state.dynClear = 0; state.pausedAt = 0;
+        state.lowConf = true;
+        state.noPauseUntil = now + COOLDOWN_MS;
+        resetLevel();
+        return;
+      }
+      var calm = !linBad && (linMag === null || linMag < LIN_TOL * 0.5) && (aDev < DYN_TOL * 0.5);
+      if (calm){
+        if (!state.dynClear) state.dynClear = now;
+        if (now - state.dynClear >= LIN_OFF_MS) resumeMeasure();
+      } else state.dynClear = 0;
     } else {
-      state.dynSince = 0;
-    }
-    if (oriDev !== null && Math.abs(oriDev) > ORI_DIFF){
-      if (!state.oriBadSince) state.oriBadSince = now;
-      if (now - state.oriBadSince >= ORI_HOLD) pauseMeasure('cross');
-    } else {
-      state.oriBadSince = 0;
-    }
-    if (state.measPaused && (aDev < DYN_TOL * 0.5) && (oriDev === null || Math.abs(oriDev) < ORI_DIFF * 0.5)){
-      if (!state.dynClear) state.dynClear = now;
-      if (now - state.dynClear >= DYN_OFF_MS) resumeMeasure();
-    } else if (state.measPaused){
       state.dynClear = 0;
+      if (state.lowConf && !linBad && !magBad) state.lowConf = false;
     }
   }
 
@@ -1017,14 +1048,35 @@
     state.lon = (state.absLon - calLon) * w;
     if (Math.abs(state.lat) < 0.02) state.lat = 0;
     if (Math.abs(state.lon) < 0.02) state.lon = 0;
+
+    // 【deep11c】坡上开机的自动脱困：零点被坡度吃掉后，只要车开到水平路面并稳定 3s，
+    // 就把零点重校为当前水平姿态，免得用户带着「偏小 X°」的零点一路开下去。
+    if (state.calSuspect && state.hasCal && !state.upright && !state.measPaused){
+      var canFlat = (mountMode !== 'stand') || (mountBase.lat !== null && mountBase.lon !== null);
+      if (canFlat){
+        var rNow = mountResid(state.absLat, state.absLon,
+                              Math.sqrt(state.absLat * state.absLat + state.absLon * state.absLon));
+        if (rNow < 1.0){
+          if (!state.flatSince) state.flatSince = Date.now();
+          else if (Date.now() - state.flatSince >= 3000){
+            state.calLat = state.absLat; state.calLon = state.absLon;
+            state.flatSince = 0;
+            clearSuspend();
+            if (elHint) elHint.textContent = '已在平路自动重新校准零点，读数与预警恢复正常。';
+          }
+        } else state.flatSince = 0;
+      } else state.flatSince = 0;
+    }
     // 合成倾角用未淡出的真实相对角：它只用于「是否已水平」提示，不该被侧立权重污染
     var dLatC = state.absLat - calLat, dLonC = state.absLon - calLon;
     state.tot = Math.sqrt(dLatC * dLatC + dLonC * dLonC);
 
     // 车身持续加速/刹车 → 冻结纵向报警（这是「刹车当坡度」的根治手段，比压低通滤波率更彻底）
-    var oriDev = crossCheck();
-    state.oriDev = oriDev;
-    updateDyn(state.aDev, oriDev);
+    // 生效的线性加速度：超过 300ms 没更新（走 orientation 兜底通道时）视为无效
+    var linMag = (state.linTs && Date.now() - state.linTs <= 300) ? state.linMag : null;
+    state.linMagNow = linMag;
+    state.oriDev = null;          // 交叉校验已移除，保留字段仅供调试面板显示
+    updateDyn(state.aDev, linMag);
 
     render();
   }
@@ -1046,7 +1098,7 @@
     }
     if (idle > 1200) return;                  // 短暂静默（静止时的采样优化）不刷，避免来回跳
     if (state.measPaused){
-      var pTxt = state.pauseWhy === 'cross' ? '测量暂停·姿态超差' : '测量暂停·车身加速';
+      var pTxt = '测量暂停·车身加速';
       if (elStatus.textContent !== pTxt){
         elStatus.className = 'status err';
         elStatus.textContent = pTxt;
@@ -1054,9 +1106,10 @@
       return;
     }
     if (state.calSuspect){
-      if (elStatus.textContent !== '待平路重校'){
+      var cTxt = '坡上上电 ' + state.susDeg.toFixed(0) + '°·平路自动重校';
+      if (elStatus.textContent !== cTxt){
         elStatus.className = 'status err';
-        elStatus.textContent = '待平路重校';
+        elStatus.textContent = cTxt;
       }
       return;
     }
@@ -1114,6 +1167,15 @@
     // 若某些机型只发空壳数据，不能让它们刷新 lastMotion 把 orientation 兜底通道也堵死。
     var mag = Math.sqrt(ax*ax + ay*ay + az*az);
     if (!(mag > 0.35)) return;
+    // 【deep11】线性加速度：iOS 的 e.acceleration 已由系统扣除重力，是判断「车在加速/刹车」
+    // 最直接的物理量。老机型/部分浏览器为 null，此时置 null 走模长兜底判据。
+    var la = e.acceleration;
+    if (la && (la.x !== null || la.y !== null || la.z !== null)){
+      var lx = la.x || 0, ly = la.y || 0, lz = la.z || 0;
+      var lin = Math.sqrt(lx * lx + ly * ly + lz * lz);
+      state.linMag = lin > 3 ? lin / 9.80665 : lin;   // 兼容 m/s² 与 g 两种单位
+      state.linTs = Date.now();
+    }
     state.mode = 'motion';
     lastMotion = Date.now();
     lastEvent = lastMotion;
@@ -1418,6 +1480,7 @@
       frozenLon: elLon.classList.contains('frozen'),
       // 深度整改新增
       aDev: state.aDev, measPaused: state.measPaused, dynSince: state.dynSince,
+      linMag: state.linMagNow, lowConf: state.lowConf, pausedAt: state.pausedAt,
       pauseWhy: state.pauseWhy, oriDev: state.oriDev, oriPitchS: state.oriPitchS, oriBias: oriBias,
       calSuspect: state.calSuspect, susDeg: state.susDeg,
       mountBaseLat: mountBase.lat, mountBaseLon: mountBase.lon,
@@ -1439,5 +1502,6 @@
   elGv.textContent = '--';
 })();
 </script>
+<div id="verTag" style="position:fixed;left:6px;bottom:3px;font-size:9px;line-height:1;color:#8a8a8a;opacity:.75;pointer-events:none;z-index:9999;font-family:ui-monospace,Menlo,monospace">v11</div>
 </body>
 </html>
