@@ -90,7 +90,36 @@
   button:active{transform:scale(.975);background:#161e27}
   button.primary{background:linear-gradient(180deg,#1c8f55,#136b3f);border-color:rgba(40,224,122,.45);color:#eafff4}
   button.ghost{flex:0 0 auto;padding:12px 14px;color:var(--dim);font-weight:500}
+  button.ghost.off{opacity:.42}
+  @media (max-width:430px){ footer{gap:6px} button.ghost{padding:12px 9px;font-size:12px} }
   .hint{font-size:11px;color:var(--dim);text-align:center;line-height:1.5}
+
+  /* ---------- 接近角 / 离去角 限位线 ---------- */
+  .limit-line{position:absolute;left:9%;right:9%;height:0;
+    border-top:1.5px dashed rgba(255,110,110,.7);pointer-events:none;
+    transform:translateY(-50%);opacity:.85;transition:opacity .2s}
+  .limit-line span{position:absolute;right:0;top:-15px;font-size:9px;letter-spacing:.04em;
+    color:#ff9d9d;background:rgba(6,8,11,.8);padding:1px 5px;border-radius:5px;white-space:nowrap}
+  .limit-line.down span{top:3px}
+  .limit-line.hit{border-top-width:2.5px;border-top-style:solid;border-color:#ff3b3b;opacity:1;
+    box-shadow:0 0 12px rgba(255,59,59,.55)}
+
+  /* 超限整体告警 */
+  body.alarm .gauge{border-color:#ff3b3b;box-shadow:inset 0 0 40px rgba(120,0,0,.6),0 0 0 6px rgba(255,59,59,.18)}
+  body.alarm .bubble{background:radial-gradient(circle at 38% 32%,#ffe4e4 0%,#ff3b3b 45%,#b00000 100%);
+    box-shadow:0 0 22px rgba(255,59,59,.8),0 0 70px rgba(255,59,59,.35)}
+  body.alarm .brand,body.alarm .card .v{color:#ff5d5d}
+  @keyframes alarmPulse{
+    0%,100%{box-shadow:inset 0 0 26px rgba(140,0,0,.5),0 0 0 4px rgba(255,59,59,.14)}
+    50%    {box-shadow:inset 0 0 56px rgba(190,0,0,.9),0 0 0 11px rgba(255,59,59,.36)}
+  }
+  body.alarm .gauge{animation:alarmPulse .55s ease-in-out infinite}
+
+  /* 限位标签行 */
+  .lim-tags{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+  .lim-tag{font-size:9.5px;letter-spacing:.02em;padding:2px 6px;border-radius:6px;
+    border:1px solid rgba(255,110,110,.35);color:#ff9d9d;background:rgba(255,59,59,.07);white-space:nowrap}
+  .lim-tag.on{background:#ff3b3b;border-color:#ff3b3b;color:#fff}
 
   /* 遮罩授权层 */
   #gate{position:fixed;inset:0;z-index:50;background:rgba(4,6,9,.94);backdrop-filter:blur(8px);
@@ -136,6 +165,8 @@
         <div class="cross"></div>
         <div class="cross2"></div>
         <div class="target"></div>
+        <div class="limit-line up" id="limUp"><span id="limUpTag">21° 离去角</span></div>
+        <div class="limit-line down" id="limDown"><span id="limDownTag">19° 接近角</span></div>
         <div class="needle" id="needle"></div>
         <div class="bubble" id="bubble"></div>
         <div class="gauge-val"><b id="gv">--</b><span>DEG</span></div>
@@ -144,7 +175,12 @@
 
     <div class="readouts">
       <div class="card"><div class="k">横向 LATERAL</div><div class="v" id="vLat">--<em>°</em></div></div>
-      <div class="card"><div class="k">纵向 LONGITUDINAL</div><div class="v" id="vLon">--<em>°</em></div></div>
+      <div class="card"><div class="k">纵向 LONGITUDINAL</div><div class="v" id="vLon">--<em>°</em></div>
+        <div class="lim-tags">
+          <span class="lim-tag" id="tagApp">接近 19°</span>
+          <span class="lim-tag" id="tagDep">离去 21°</span>
+        </div>
+      </div>
       <div class="card total"><div class="k">合成倾角 TOTAL</div><div class="v" id="vTot">--<em>°</em></div></div>
     </div>
   </main>
@@ -152,9 +188,11 @@
   <footer>
     <button class="primary" id="btnCal">校准置零</button>
     <button id="btnReset">重置</button>
+    <button class="ghost" id="btnSound">🔔</button>
+    <button class="ghost" id="btnFlip">↕ 车头</button>
     <button class="ghost" id="btnFull">全屏</button>
   </footer>
-  <div class="hint" id="hint">首次请点上方“启用传感器”并允许运动与方向权限</div>
+  <div class="hint" id="hint">首次请点上方“启用传感器”；接近角 19° / 离去角 21° 超限将「嘀嘀嘀」报警</div>
 </div>
 
 <div id="gate">
@@ -171,6 +209,9 @@
   var $ = function(id){ return document.getElementById(id); };
   var elBubble=$('bubble'), elNeedle=$('needle'), elGv=$('gv');
   var elLat=$('vLat'), elLon=$('vLon'), elTot=$('vTot');
+  var elGauge=$('gauge'), elLimUp=$('limUp'), elLimDown=$('limDown');
+  var elUpTag=$('limUpTag'), elDownTag=$('limDownTag');
+  var elTagApp=$('tagApp'), elTagDep=$('tagDep');
   var elStatus=$('status'), elHint=$('hint'), gate=$('gate');
 
   var state = {
@@ -188,6 +229,12 @@
   var LEVEL_DEG = 0.5;      // 水平阈值
   var WARN_DEG  = 3.0;      // 警示阈值
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
+
+  /* ---- 车辆通过性限位 ---- */
+  var APPROACH  = 19;       // 接近角
+  var DEPARTURE = 21;       // 离去角
+  var PRE_ALERT = 3;        // 提前预警距离（度）
+  var HEADING = 1;          // 1 = 手机顶部朝车头；-1 = 顶部朝车尾
 
   /* -------------------- 姿态解算 -------------------- */
   // 屏幕方向角（0/90/180/270），统一取正值
@@ -261,6 +308,90 @@
 
   function vibrate(p){ try{ if (navigator.vibrate) navigator.vibrate(p); }catch(e){} }
 
+  /* -------------------- 音效引擎（嘀嘀嘀） -------------------- */
+  var audio = { ctx:null, muted:false };
+
+  function audioCtx(){
+    if (audio.ctx) return audio.ctx;
+    try{
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      audio.ctx = new AC();
+    }catch(e){ audio.ctx = null; }
+    return audio.ctx;
+  }
+
+  // iOS 需在用户手势里解锁音频
+  function unlockAudio(){
+    var ac = audioCtx();
+    if (!ac) return;
+    if (ac.state === 'suspended'){ ac.resume().catch(function(){}); }
+    try{
+      var o = ac.createOscillator(), g = ac.createGain();
+      g.gain.value = 0.0001;
+      o.connect(g); g.connect(ac.destination);
+      o.start(); o.stop(ac.currentTime + 0.02);
+    }catch(e){}
+  }
+
+  function beep(freq, dur, vol){
+    if (audio.muted) return;
+    var ac = audioCtx();
+    if (!ac) return;
+    if (ac.state === 'suspended'){ ac.resume().catch(function(){}); }
+    var t = ac.currentTime;
+    var o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'square';
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t); o.stop(t + dur + 0.03);
+  }
+
+  /* -------------------- 接近角 / 离去角 限位 -------------------- */
+  // 车头俯仰：正 = 车头抬起（后保险杠吃紧，受离去角约束）
+  function headPitch(){ return (state.absLon || 0) * HEADING; }
+
+  function judge(hp){
+    if (hp >=  DEPARTURE)                 return { level:'alarm', which:'dep' };
+    if (hp <= -APPROACH)                  return { level:'alarm', which:'app' };
+    if (hp >=  DEPARTURE - PRE_ALERT)     return { level:'warn',  which:'dep' };
+    if (hp <= -(APPROACH - PRE_ALERT))    return { level:'warn',  which:'app' };
+    return { level:'safe', which:null };
+  }
+
+  function layoutLimits(){
+    var w = elGauge.clientWidth || 300;
+    var rMax = w * MAX_OFFSET;
+    var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;  // 气泡向上所对应的角
+    var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
+    elLimUp.style.top   = 'calc(50% + ' + (-rMax * upLimit   / 45).toFixed(1) + 'px)';
+    elLimDown.style.top = 'calc(50% + ' + ( rMax * downLimit / 45).toFixed(1) + 'px)';
+  }
+
+  // 嘀嘀嘀：超限 = 三连急响后停顿；预警 = 慢速单响
+  var beatLast = 0, beatIdx = 0;
+  setInterval(function(){
+    var j = judge(headPitch());
+    if (audio.muted || j.level === 'safe'){ beatIdx = 0; return; }
+    var now = Date.now();
+    if (j.level === 'alarm'){
+      var gap = beatIdx >= 3 ? 780 : 175;
+      if (now - beatLast >= gap){
+        beatLast = now;
+        beatIdx = beatIdx >= 3 ? 1 : beatIdx + 1;
+        beep(1250, 0.075, 0.27);
+      }
+    } else {
+      if (now - beatLast >= 560){
+        beatLast = now;
+        beep(880, 0.09, 0.15);
+      }
+    }
+  }, 30);
+
   function render(){
     var lat = state.lat, lon = state.lon, tot = state.tot;
 
@@ -285,10 +416,25 @@
     elNeedle.style.transform = 'translateX(-1px) rotate(' + ang.toFixed(1) + 'deg)';
 
     setLevelClass(tot);
+
+    // 接近角 / 离去角 限位判定与视觉告警
+    var j = judge(headPitch());
+    var alarm = j.level === 'alarm';
+    document.body.classList.toggle('alarm', alarm);
+    elLimUp.classList.toggle('hit', alarm && j.which === 'dep');
+    elLimDown.classList.toggle('hit', alarm && j.which === 'app');
+    elTagDep.classList.toggle('on', j.level !== 'safe' && j.which === 'dep');
+    elTagApp.classList.toggle('on', j.level !== 'safe' && j.which === 'app');
+    if (alarm && Date.now() - state.lastVibe > 400){
+      state.lastVibe = Date.now();
+      vibrate([45, 55, 45, 55, 45]);
+    }
   }
 
   function update(grav){
     var p = project(grav);
+    state.absLat = p.lat;
+    state.absLon = p.lon;
     state.lat = p.lat - (state.hasCal ? state.calLat : 0);
     state.lon = p.lon - (state.hasCal ? state.calLon : 0);
     var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
@@ -319,10 +465,11 @@
     if (listening) return;
     listening = true;
     state.running = true;
+    unlockAudio();   // 借用户点击手势解锁音频
     window.addEventListener('deviceorientation', onOrientation, true);
     window.addEventListener('devicemotion', onMotion, true);
     elStatus.className = 'status on';
-    elHint.textContent = '已启用：将手机屏幕朝上平放测量；可点「校准置零」以当前面为基准';
+    elHint.textContent = '已启用：超过接近角 19° 或离去角 21° 会「嘀嘀嘀」报警；测通过角时请勿校准，保持绝对倾角';
     setTimeout(function(){
       if (!state.running) return;
       if (Date.now() - lastEvent > 2500 && state.mode === 'none'){
@@ -405,6 +552,35 @@
     elHint.textContent = '校准已重置，读数回到绝对倾角';
   });
 
+  $('btnSound').addEventListener('click', function(){
+    unlockAudio();
+    audio.muted = !audio.muted;
+    this.textContent = audio.muted ? '🔇' : '🔔';
+    this.classList.toggle('off', audio.muted);
+    if (!audio.muted) beep(1180, 0.09, 0.18);
+    elHint.textContent = audio.muted
+      ? '声音已关闭，超限仅蜂鸣关闭 + 闪屏/震动提示'
+      : '声音已开启，超过接近角 / 离去角将「嘀嘀嘀」报警';
+  });
+
+  $('btnFlip').addEventListener('click', function(){
+    HEADING = -HEADING;
+    if (HEADING === 1){
+      elUpTag.textContent = '21° 离去角';
+      elDownTag.textContent = '19° 接近角';
+      this.textContent = '↕ 车头↑';
+    } else {
+      elUpTag.textContent = '19° 接近角';
+      elDownTag.textContent = '21° 离去角';
+      this.textContent = '↕ 车头↓';
+    }
+    layoutLimits();
+    vibrate(15);
+    elHint.textContent = HEADING === 1
+      ? '当前设定：手机顶部朝向车头，屏幕向上 = 车头上坡（离去角约束）'
+      : '当前设定：手机顶部朝向车尾，屏幕向上 = 车头下坡（接近角约束）';
+  });
+
   $('btnFull').addEventListener('click', function(){
     var el = document.documentElement;
     try{
@@ -445,6 +621,9 @@
   });
 
   // 首次渲染
+  layoutLimits();
+  window.addEventListener('resize', layoutLimits);
+  window.addEventListener('orientationchange', function(){ setTimeout(layoutLimits, 120); });
   render();
   elLat.innerHTML = '--<em>°</em>';
   elLon.innerHTML = '--<em>°</em>';
