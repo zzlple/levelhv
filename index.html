@@ -82,7 +82,7 @@
   .card .v em{font-size:.42em;font-weight:600;font-style:normal;color:var(--dim);margin-left:3px}
   .card.total{grid-column:1 / -1}
   .card.total .v{font-size:clamp(22px,6vh,42px)}
-  /* 竖立姿态下横向角不可测，读数置灰表示「保持值」 */
+  /* 侧立奇点下横向角不可测，读数置灰表示「保持值」 */
   .card .v.frozen{opacity:.38}
   body.ok .card .v{color:var(--ok)}
   body.warn .card .v{color:var(--warn)}
@@ -257,21 +257,16 @@
     holdLat:0,            // 当前采用的横向绝对值（渲染/校准基准）
     absLat:0,             // 平滑后的横向绝对值
     goodLat:0,            // 最近一次「可信姿态」下的横向角
-    upright:false,        // 手机接近竖直：横向角不可测
+    upright:false,        // 手机侧立（up≈0）：横向/纵向角不可测
     trusted:false,        // 横向角当前是否可信（双阈值迟滞状态）
     smooth:{x:0,y:0}
   };
 
   var LEVEL_DEG = 0.5;      // 水平阈值
-  // 竖立判定：屏幕法线方向的重力分量 |sz| 小于该值即视为「横向不可测」。
-  // 原理：横向角 = atan2(sx, -sz)，分母 sz→0 时噪声被放大 1/|sz| 倍，属于几何奇点。
-  // 实测 |sz|=0.42（屏幕仰角 65°）时 1/|sz|≈2.4 倍放大已肉眼可见抖动，故门限收紧到 0.60（仰角约 53°），
-  // 只有明确平放/微倾的车载姿态才采信横向角。
-  var UPRIGHT_SZ = 0.60;
-  // 可信/不可测切换用双阈值迟滞：否则 |sz| 恰好落在门限上（仰角≈53°）时会因噪声来回切换，
-  // 气泡在「失真读数」与「归零」之间反复跳动，观感同样是左右漂。
-  var SZ_TRUST_ON  = 0.70;  // |sz| 高于此值才恢复采信横向角
-  var SZ_TRUST_OFF = 0.52;  // |sz| 低于此值判定横向不可测
+  // 侧立奇点门限：重力在主竖直轴上的分量（up）低于 MIN_UP 时，手机是「侧立」（长边竖直、屏幕朝侧面），
+  // 横向/纵向角在数学上都无意义，此时才需要归零；平放与竖立两种正常姿态的 up 都接近 1，可正常测量。
+  var MIN_UP  = 0.25;
+  var FULL_UP = 0.40;
   var WARN_DEG  = 3.0;      // 警示阈值
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
 
@@ -328,15 +323,20 @@
     var sy = -grav.x*sn + grav.y*cs;   // 屏幕向上
     var sz =  grav.z;                  // 屏幕向里（平放时为负）
 
-    var denom = Math.sqrt(sx*sx + sz*sz) || 1e-6;
-    var lat = Math.atan2(sx, -sz) * 180/Math.PI;            // 右侧低为正
-    var lon = Math.atan2(-sy, Math.sqrt(sx*sx + sz*sz)) * 180/Math.PI; // 顶部抬起为正
+    // 姿态主轴自适应：重力主要落在「屏幕法线(-sz)」上 → 平放族；落在「屏幕上下轴(-sy)」上 → 竖立族。
+    // 主力轴只用来选「纵向角该取哪根轴」，横向角统一用 asin(sx)：它等于真实的左右单轴倾角，
+    // 不随手机前倾/后仰被压缩（atan2(sx,-sz) 在仰角 70° 时会把 8° 侧倾放大成 22°），也彻底避开 sz→0 的奇点。
+    // 纵向：平放取 asin(-sy)，竖立取 asin(-sz)。
+    var useZ = Math.abs(sz) >= Math.abs(sy);
+    var up = Math.abs(useZ ? sz : sy) || 1e-6;                 // 主竖直轴上的重力分量，正常姿态≈1
+    var lat = Math.asin(Math.max(-1, Math.min(1, sx))) * 180/Math.PI;                       // 右侧低为正
+    var lon = Math.asin(Math.max(-1, Math.min(1, useZ ? -sy : -sz))) * 180/Math.PI;          // 顶部抬起为正
     var tot = Math.acos(Math.max(-1, Math.min(1, -sz))) * 180/Math.PI;
     if (!isFinite(lat)) lat = 0;
     if (!isFinite(lon)) lon = 0;
     if (!isFinite(tot)) tot = 0;
-    // sz 一并返回：|sz| 越小说明手机越接近竖直，横向角 atan2(sx,-sz) 的分母越接近 0，数值越不可信
-    return { lat:lat, lon:lon, tot:tot, sz:sz };
+    // up 一并返回：只有手机侧立时 up→0，此时横向/纵向才不可测，需要归零回中
+    return { lat:lat, lon:lon, tot:tot, up:up, sz:sz };
   }
 
   /* -------------------- 渲染 -------------------- */
@@ -604,7 +604,7 @@
     var lat = state.lat, lon = state.lon, tot = state.tot;
 
     elLat.innerHTML = fmt(lat) + '<em>°</em>';
-    elLat.classList.toggle('frozen', state.upright);   // 竖立时横向不可测：读数置灰，表示保持值
+    elLat.classList.toggle('frozen', state.upright);   // 侧立奇点：横向不可测，读数置灰表示保持值
     elLon.innerHTML = fmt(lon) + '<em>°</em>';
     elTot.innerHTML = fmt(tot) + '<em>°</em>';
     // 圆球只显示纵向数值（车头/车尾俯仰）
@@ -629,7 +629,7 @@
     elNeedle.style.transform = 'translateX(-1px) rotate(' + ang.toFixed(1) + 'deg)';
 
     // 接近角 / 离去角 分级：按相对倾角占限位的比例，70% 起预警、95% 起长鸣
-    // 竖立姿态不是车载安装姿态（纵向会逼近 ±90°），此时不做通过角判定，避免拿起手机就长鸣
+    // 侧立奇点姿态下纵向角无意义，此时不做通过角判定，避免拿起手机就误长鸣
     var j = state.upright
       ? { level:'safe', which: relPitch() >= 0 ? 'dep' : 'app', ratio:0, lim:0 }
       : grade(relPitch());
@@ -654,23 +654,23 @@
 
   function update(grav){
     var p = project(grav);
-    var asz = Math.abs(p.sz);
-    // 可信度权重 0~1：|sz| 越大，横向角 atan2(sx,-sz) 越可信。
-    // 0.52~0.70 之间线性过渡（仰角约 46°~59°），而不是二值门限——
-    // 二值门限在临界角度会被噪声反复跨过，气泡在「失真读数」与「归零」间来回跳，看起来同样是左右漂。
-    var w = (asz - SZ_TRUST_OFF) / (SZ_TRUST_ON - SZ_TRUST_OFF);
+    // 可信度权重 0~1：由「重力在主竖直轴上的分量 up」决定，而不是 |sz|。
+    // 平放（up≈1）与竖立（up≈1）都能正常出横向/纵向读数；只有手机侧立、up→0 的几何奇点才按权重压到 0 回中。
+    // up 从 0.25 到 0.40 线性过渡，避免门限处被噪声反复跨过导致气泡来回跳。
+    var w = (p.up - MIN_UP) / (FULL_UP - MIN_UP);
     w = w < 0 ? 0 : (w > 1 ? 1 : w);
-    state.upright = w < 0.5;          // 超过约 51° 即视为横向不可测：置灰 + 暂停通过角报警
+    state.upright = w < 0.5;          // 侧立（up<约 0.32）才视为不可测：置灰 + 暂停通过角报警
     state.absLon = p.lon;
-    var targetLat = p.lat * w;        // 竖立附近直接把失真读数按权重压掉（权重 0 时即归零回中）
+    var targetLat = p.lat;            // 横向角在平放/竖立两族都真实可测，不再按姿态压缩
     var dLat = targetLat - state.absLat;
     // 大幅真实倾斜直通保持响应速度；小变化低通抑制手抖噪声
     state.absLat = Math.abs(dLat) > 2.5 ? targetLat : state.absLat + dLat * 0.22;
+    if (state.upright) state.absLat *= w;        // 仅侧立奇点附近淡出到 0
     if (Math.abs(state.absLat) < 0.05) state.absLat = 0;
     state.holdLat = state.absLat;
-    // 竖立时横向强制为 0（不再扣校准零点，否则会显示 -calLat 而偏在一边）
+    // 侧立时横向强制为 0（不扣校准零点，否则会显示 -calLat 而偏在一边）
     state.lat = state.upright ? 0 : state.absLat - (state.hasCal ? state.calLat : 0);
-    state.lon = p.lon - (state.hasCal ? state.calLon : 0);
+    state.lon = state.upright ? 0 : p.lon - (state.hasCal ? state.calLon : 0);
     var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
     state.tot = t;
     render();
@@ -778,10 +778,9 @@
   function calibrate(silent){
     if (!silent) autoCalArmed = false;   // 手动校准后不再被自动校准覆盖
     var p = project(state._lastGrav || {x:0, y:0, z:-1});
-    var upright = Math.abs(p.sz) < UPRIGHT_SZ;
+    var upright = p.up < MIN_UP;
     if (upright && state.hasCal){
-      // 竖立时横向不可测：不把随机值写进横向基准，只把冻结读数对齐现有基准（显示 0）
-      state.calLon = p.lon;
+      // 侧立奇点处横向/纵向都不可测：不把随机值写进基准，只保持现有基准（显示 0）
       state.holdLat = state.calLat;
     } else {
       state.calLat = p.lat;
@@ -792,7 +791,7 @@
     if (!silent){
       vibrate(20);
       elHint.textContent = upright
-        ? '已校准：手机接近竖直，横向角此时不可测（读数已冻结），平放后可再校一次'
+        ? '已校准：手机处于侧立姿态，横向/纵向此时不可测，转回平放或竖立后可再校一次'
         : '已校准：当前姿态记为 0.00°，可点「重置」清除';
       if (state._lastGrav) update(state._lastGrav);   // 立即刷新为 0.00°
     }
@@ -854,13 +853,13 @@
     if (autoCalArmed){
       if (!autoCalTs) autoCalTs = Date.now();
       var pp = project(grav);
-      // 竖立姿态下横向角不可观测，其 lat 是噪声决定的随机值，绝不能纳入置零基准，否则后续横向读数整体偏移
-      if (Math.abs(pp.sz) >= UPRIGHT_SZ){
+      // 侧立奇点姿态下横向/纵向角不可观测，其 lat 是噪声决定的随机值，绝不能纳入置零基准
+      if (pp.up >= FULL_UP){
         autoCalLat += pp.lat;
         autoCalLon += pp.lon;
         autoCalN++;
       }
-      // 收满约 0.7 秒、至少 8 帧有效样本后取平均置零，避免首帧抖动与竖立样本污染
+      // 收满约 0.7 秒、至少 8 帧有效样本后取平均置零，避免首帧抖动与侧立样本污染
       if (autoCalN >= 8 && Date.now() - autoCalTs >= 700){
         autoCalArmed = false;
         state.calLat = autoCalLat / autoCalN;
