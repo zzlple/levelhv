@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="水平仪">
 <meta name="theme-color" content="#06080b">
+<!-- pose13: 姿态解算重写 — 横向 asin 无 180° 奇点 / 纵向按校准姿态定可信度 / 一阶低通+死区 -->
 <title>水平仪 · Level</title>
 <style>
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -264,6 +265,8 @@
     lastVibe:0,
     inLevel:false,
     calPending:false,
+    fLat:null, fLon:null, fTot:null,   // 一阶低通后的绝对倾角
+    uz:0, uzCal:1,          // 屏幕法线重力分量：实时值 / 校准时快照（定纵向可信度用）
     smooth:{x:0,y:0}
   };
 
@@ -304,14 +307,23 @@
   }
 
   // 由 accelerationIncludingGravity 求“重力朝下”单位向量（自适应各平台符号）
+  // 关键修复：原先用 `if (gz > 0)` 单阈值判符号，手机竖立（屏幕法线水平，gz≈0）时
+  // 判定随噪声来回翻转，整条重力向量被满幅镜像 → 纵向读数在 ±90° 间乱跳。
+  // 改为 ±0.25 迟滞带锁定：只有明确“屏幕明显朝下/朝上”时才切换，模糊区保持上次结论。
+  var gzSignState = 1;   // 1 = 原始方向；-1 = 已翻转
   function gravityFromMotion(ax, ay, az){
     var m = Math.sqrt(ax*ax + ay*ay + az*az) || 1;
     var gx = ax/m, gy = ay/m, gz = az/m;
-    if (gz > 0){ gx = -gx; gy = -gy; gz = -gz; }
+    if (gz > 0.25) gzSignState = -1;
+    else if (gz < -0.25) gzSignState = 1;
+    if (gzSignState === -1){ gx = -gx; gy = -gy; gz = -gz; }
     return { x:gx, y:gy, z:gz };
   }
 
   // 把设备坐标向量投影到屏幕坐标 → 求横向/纵向倾角
+  // 关键修复：横向原先用 atan2(sx, -sz)，手机竖立（屏幕法线水平，|sz|→0）时
+  // 分母趋零、符号随噪声翻转，atan2 会在 0° 与 ±180° 两个分支间乱跳，气泡满幅横穿表盘。
+  // 改为 asin(屏幕向右方向的重力分量)：连续、无奇异点、竖立/平放/横屏全姿态通用。
   function project(grav){
     var a = screenAngle() * Math.PI/180;
     var cs = Math.cos(a), sn = Math.sin(a);
@@ -319,14 +331,30 @@
     var sy = -grav.x*sn + grav.y*cs;   // 屏幕向上
     var sz =  grav.z;                  // 屏幕向里（平放时为负）
 
-    var denom = Math.sqrt(sx*sx + sz*sz) || 1e-6;
-    var lat = Math.atan2(sx, -sz) * 180/Math.PI;            // 右侧低为正
-    var lon = Math.atan2(-sy, Math.sqrt(sx*sx + sz*sz)) * 180/Math.PI; // 顶部抬起为正
-    var tot = Math.acos(Math.max(-1, Math.min(1, -sz))) * 180/Math.PI;
+    var m = Math.sqrt(sx*sx + sy*sy + sz*sz) || 1e-6;
+    var ux = sx/m, uy = sy/m, uz = sz/m;
+    var RAD = 180/Math.PI;
+
+    // 横向：屏幕「向右」方向的重力占比 → asin，范围 ±90°，无 180° 分支
+    var lat = Math.asin(Math.max(-1, Math.min(1, ux))) * RAD;
+    // 纵向：屏幕「向上」方向分量的倾角（平放/斜放装法下才是真实坡度）。
+    // 注：手机越接近竖直，前后坡度在几何上就越不可测（屏幕平面几乎不含前后方向），
+    // 这里照常算出 lon，再由可信度 wLon 在竖立区把它平滑衰减到 0，避免 ±90° 乱跳/误报。
+    var lon = Math.atan2(-uy, Math.sqrt(ux*ux + uz*uz)) * RAD;
+    // 纵向可信度由「校准时的安装姿态」决定，而不是实时姿态：
+    // 若用实时 |uz|，车越上坡手机越接近竖直，读数会被同步衰减，形成“坡越大越不报警”的漏报。
+    // 二值判定（0.20 ≈ 手机与水平面夹角 78°）：宁可全信而在极竖立时明确归零，
+    // 也不做半信折扣 —— 折扣会让大坡度读数被同步压低，等于悄悄抬高报警阈值。
+    var wLon = state.uzCal >= 0.20 ? 1 : 0;
+    state.wLon = wLon;
+    if (!isFinite(lon)) lon = 0;
+    // 合成：相对屏幕法线的总夹角（仅展示用）
+    var tot = Math.acos(Math.max(-1, Math.min(1, -uz))) * RAD;
+
     if (!isFinite(lat)) lat = 0;
     if (!isFinite(lon)) lon = 0;
     if (!isFinite(tot)) tot = 0;
-    return { lat:lat, lon:lon, tot:tot };
+    return { lat:lat, lon:lon, tot:tot, uz:uz };
   }
 
   /* -------------------- 渲染 -------------------- */
@@ -655,6 +683,27 @@
       state.lastVibe = Date.now();
       vibrate([30, 40, 30]);
     }
+    // 手机接近竖直时前后坡度不可测：明确提示放平，且此时不参与限位报警（纵向已归零 → 自然判安全）
+    if (state.running && !state.calPending && state.wLon !== undefined && state.wLon < 0.35){
+      state.stoodWarn = (state.stoodWarn || 0) + 1;
+      if (state.stoodWarn > 40){
+        elStatus.textContent = '手机接近竖直 · 前后坡度不可测，请平放';
+        elStatus.className = 'status notice';
+        return;
+      }
+    } else { state.stoodWarn = 0; }
+    // 姿态突变提示：车内真实坡度极少超过 30°，相对值长期超 32° 说明手机被重新夹过/换姿态，
+    // 此时只做提示引导重校（不自动改零点、不关闭报警），避免把安装角变化当成陡坡
+    if (state.running && !state.calPending && state.hasCal && Math.abs(state.lon) > 32){
+      state.poseWarn = (state.poseWarn || 0) + 1;
+      if (state.poseWarn > 90){
+        elStatus.textContent = '姿态已变 · 请点校准置零';
+        elStatus.className = 'status err';
+        return;
+      }
+    } else {
+      state.poseWarn = 0;
+    }
     // 状态胶囊实时显示档位与「到限位线的百分比」
     if (state.running && state.mode !== 'none'){
       var pct = Math.round(j.r * 100);
@@ -670,8 +719,18 @@
     var p = project(grav);
     state.absLat = p.lat;
     state.absLon = p.lon;
-    state.lat = p.lat - (state.hasCal ? state.calLat : 0);
-    state.lon = p.lon - (state.hasCal ? state.calLon : 0);
+    state.uz = p.uz;
+    // 一阶低通（α=0.16）：把加速度计 ~0.3° 的高频噪声压到肉眼不可见，
+    // 同时保证 5°/s 的真实坡度变化只滞后约 0.1 秒
+    if (state.fLat === null){ state.fLat = p.lat; state.fLon = p.lon; state.fTot = p.tot; }
+    state.fLat += (p.lat - state.fLat) * 0.16;
+    state.fLon += (p.lon - state.fLon) * 0.16;
+    state.fTot += (p.tot - state.fTot) * 0.16;
+    var rawLat = state.fLat - (state.hasCal ? state.calLat : 0);
+    var rawLon = (state.fLon - (state.hasCal ? state.calLon : 0)) * (state.wLon === undefined ? 1 : state.wLon);
+    // 死区：±0.12° 内视作 0，避免停车怠速时的数字微抖
+    state.lat = Math.abs(rawLat) < 0.12 ? 0 : rawLat;
+    state.lon = Math.abs(rawLon) < 0.12 ? 0 : rawLon;
     var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
     state.tot = t;
     render();
@@ -784,6 +843,7 @@
     var p = project(state._lastGrav || {x:0, y:0, z:-1});
     state.calLat = p.lat;
     state.calLon = p.lon;
+    state.uzCal = Math.abs(p.uz === undefined ? 1 : p.uz);
     state.hasCal = true;
     if (!silent){
       vibrate(20);
@@ -847,6 +907,7 @@
   function armAutoCal(){
     autoCal.on = true; autoCal.t0 = 0; autoCal.n = 0;
     autoCal.lat = 0; autoCal.lon = 0; autoCal.jitter = 0; autoCal.prev = null;
+    autoCal.uzSum = 0; autoCal.uzN = 0;
     state.calPending = true;
     if (state.running){
       elStatus.className = 'status notice';
@@ -868,6 +929,7 @@
     if (autoCal.n > 0){
       state.calLat = autoCal.lat / autoCal.n;
       state.calLon = autoCal.lon / autoCal.n;
+      if (autoCal.uzN){ state.uzCal = autoCal.uzSum / autoCal.uzN; }
       state.hasCal = true;
     }
     state.calPending = false;
@@ -880,13 +942,14 @@
     state._lastGrav = grav;
     _update(grav);
     if (!autoCal.on) return;
-    var pp = project(grav);
+    var pp = { lat: state.fLat, lon: state.fLon };   // 用滤波后的值采样，零点更稳
     if (!autoCal.t0) autoCal.t0 = Date.now();
     if (autoCal.prev){
       autoCal.jitter += Math.abs(pp.lat - autoCal.prev.lat) + Math.abs(pp.lon - autoCal.prev.lon);
     }
     autoCal.prev = { lat: pp.lat, lon: pp.lon };
     autoCal.lat += pp.lat; autoCal.lon += pp.lon; autoCal.n++;
+    autoCal.uzSum = (autoCal.uzSum || 0) + (state.uz || 1); autoCal.uzN = (autoCal.uzN || 0) + 1;
     if (Date.now() - autoCal.t0 < 1100 || autoCal.n < 12) return;
     if (autoCal.jitter / autoCal.n > 0.55 && autoCal.tries < 3){
       autoCal.tries++;
