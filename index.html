@@ -215,10 +215,10 @@
     <button class="primary" id="btnCal">校准置零</button>
     <button id="btnReset">重置</button>
     <button class="ghost" id="btnSound">🔔</button>
-    <button class="ghost" id="btnFlip">↕ 车头</button>
+    <button class="ghost" id="btnFlip">↕ 车头↑</button>
     <button class="ghost" id="btnFull">全屏</button>
   </footer>
-  <div class="hint" id="hint">首次请先启用传感器；荣放 20 款后保守限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留出前杠与排气管余量），超限「嘀嘀嘀」报警</div>
+  <div class="hint" id="hint">启用后自动校准置零（当前姿态记为 0.00°），默认上坡模式；荣放 20 款后保守限位 接近 17° / 离去 19°（官方 18.1°/20.3°，留出前杠与排气管余量），超限「嘀嘀嘀」报警</div>
 </div>
 
 <div id="gate">
@@ -677,14 +677,20 @@
     if (gate.classList.contains('hide') && !listening){ start(); }
   }, { once:true });
 
-  $('btnCal').addEventListener('click', function(){
-    var p = project(state.mode === 'motion' ? state._lastGrav || {x:0,y:0,z:-1} : state._lastGrav || {x:0,y:0,z:-1});
+  function calibrate(silent){
+    if (!silent) autoCalArmed = false;   // 手动校准后不再被自动校准覆盖
+    var p = project(state._lastGrav || {x:0, y:0, z:-1});
     state.calLat = p.lat;
     state.calLon = p.lon;
     state.hasCal = true;
-    vibrate(20);
-    elHint.textContent = '已校准：当前姿态记为 0.00°，可点「重置」清除';
-  });
+    if (!silent){
+      vibrate(20);
+      elHint.textContent = '已校准：当前姿态记为 0.00°，可点「重置」清除';
+      if (state._lastGrav) update(state._lastGrav);   // 立即刷新为 0.00°
+    }
+  }
+
+  $('btnCal').addEventListener('click', function(){ calibrate(false); });
 
   $('btnReset').addEventListener('click', function(){
     state.hasCal = false;
@@ -692,6 +698,7 @@
     state.calLon = 0;
     vibrate(12);
     elHint.textContent = '校准已重置，读数回到绝对倾角';
+    if (!autoCalArmed && state._lastGrav) update(state._lastGrav);   // 立即按绝对倾角刷新
   });
 
   $('btnSound').addEventListener('click', function(){
@@ -730,11 +737,27 @@
     elHint.textContent = 'iPhone 全屏：Safari 分享按钮 →「添加到主屏幕」，从桌面图标打开即为全屏';
   });
 
-  // 记录最近一次重力向量，供校准使用
+  // 记录最近一次重力向量，供校准使用；并做「打开即自动校准置零」
+  var autoCalArmed = true, autoCalTs = 0, autoCalN = 0, autoCalLat = 0, autoCalLon = 0;
   var _update = update;
   update = function(grav){
     state._lastGrav = grav;
     _update(grav);
+    if (autoCalArmed){
+      if (!autoCalTs) autoCalTs = Date.now();
+      var pp = project(grav);
+      autoCalLat += pp.lat;
+      autoCalLon += pp.lon;
+      autoCalN++;
+      // 收满约 0.7 秒、至少 8 帧样本后取平均置零，避免首帧抖动
+      if (autoCalN >= 8 && Date.now() - autoCalTs >= 700){
+        autoCalArmed = false;
+        state.calLat = autoCalLat / autoCalN;
+        state.calLon = autoCalLon / autoCalN;
+        state.hasCal = true;
+        elHint.textContent = '已自动校准置零：当前姿态记为 0.00°，默认上坡模式。要重新置零点「校准置零」，要回到绝对倾角点「重置」';
+      }
+    }
   };
 
   // 前后台切换
@@ -756,6 +779,7 @@
   });
 
   // 首次渲染
+  elGauge.classList.add('show-slope');   // 默认上坡模式，直接显示上坡/下坡框型提示
   layoutLimits();
   window.addEventListener('resize', layoutLimits);
   window.addEventListener('orientationchange', function(){ setTimeout(layoutLimits, 120); });
