@@ -252,17 +252,19 @@
     wakeLock:null,
     lastVibe:0,
     inLevel:false,
-    holdLat:0,            // 竖立时冻结的横向读数
+    holdLat:0,            // 当前采用的横向绝对值（渲染/校准基准）
+    absLat:0,             // 平滑后的横向绝对值
+    goodLat:0,            // 最近一次「可信姿态」下的横向角
     upright:false,        // 手机接近竖直：横向角不可测
     smooth:{x:0,y:0}
   };
 
   var LEVEL_DEG = 0.5;      // 水平阈值
-  // 竖立判定：屏幕法线方向的重力分量 |sz| 小于该值（约手机偏离竖直 <10°，即屏幕仰角 >80°）。
-  // 此时重力几乎落在屏幕平面内，横向角 atan2(sx,-sz) 分母趋零，属于几何奇点：读数只会跟着噪声在 ±90° 之间乱跳。
-  var UPRIGHT_SZ = 0.17;
-  // 近竖直过渡区（屏幕仰角约 >65°）：横向角仍可测但噪声被显著放大，只做重平滑不冻结
-  var NEAR_UPRIGHT_SZ = 0.42;
+  // 竖立判定：屏幕法线方向的重力分量 |sz| 小于该值即视为「横向不可测」。
+  // 原理：横向角 = atan2(sx, -sz)，分母 sz→0 时噪声被放大 1/|sz| 倍，属于几何奇点。
+  // 实测 |sz|=0.42（屏幕仰角 65°）时 1/|sz|≈2.4 倍放大已肉眼可见抖动，故门限收紧到 0.60（仰角约 53°），
+  // 只有明确平放/微倾的车载姿态才采信横向角。
+  var UPRIGHT_SZ = 0.60;
   var WARN_DEG  = 3.0;      // 警示阈值
   var MAX_OFFSET = 0.38;    // 气泡最大偏移（相对盘半径）
 
@@ -299,10 +301,15 @@
   }
 
   // 由 accelerationIncludingGravity 求“重力朝下”单位向量（自适应各平台符号）
+  // 关键：z 轴符号用「迟滞锁定」，只在 |gz| 足够大（手机明显非竖立）时判定一次。
+  // 若每帧按瞬时 gz 判符号，竖立时 gz≈0 会被噪声来回跨过 0，导致整向量正负翻转，横向角瞬间跳 ±180°。
+  var gzSign = 0;            // 0=未判定（不翻转）；-1=需要翻转
+  var GZ_HYST = 0.25;
   function gravityFromMotion(ax, ay, az){
     var m = Math.sqrt(ax*ax + ay*ay + az*az) || 1;
     var gx = ax/m, gy = ay/m, gz = az/m;
-    if (gz > 0){ gx = -gx; gy = -gy; gz = -gz; }
+    if (Math.abs(gz) >= GZ_HYST){ gzSign = gz > 0 ? -1 : 1; }   // 只在可信姿态下更新符号结论
+    if (gzSign < 0){ gx = -gx; gy = -gy; gz = -gz; }
     return { x:gx, y:gy, z:gz };
   }
 
@@ -640,20 +647,25 @@
 
   function update(grav){
     var p = project(grav);
-    var upright = Math.abs(p.sz) < UPRIGHT_SZ;
-    state.upright = upright;
+    var trust = Math.abs(p.sz) >= UPRIGHT_SZ;   // 横向角是否可信（屏幕仰角 <53°）
+    state.upright = !trust;
     state.absLon = p.lon;
-    if (upright){
-      // 竖立时横向角在几何上不可观测（分母 sz→0），冻结在最后一次有效值，避免 ±90° 乱跳
-      state.absLat = state.holdLat;
+    if (trust){
+      // 可信姿态：横向角可直接采信。轻微低通压噪声（车载静置时 ±0.05g 抖动会被放大成 ±3° 视觉抖动），
+      // 但差值大（真实倾斜）时直通，保证响应速度；同时记录回退基准
+      var dLat = p.lat - state.absLat;
+      state.absLat = Math.abs(dLat) > 2.5 ? p.lat : state.absLat + dLat * 0.22;
+      state.goodLat = p.lat;
     } else {
-      // 屏幕仰角较高（|sz| 小）时横向角对噪声的放大倍数约 1/|sz|，此时重心平滑抑制抖动；
-      // 车载平放 |sz|≈1 时 alpha=1，完全不做平滑，保持原响应速度
-      var a = Math.abs(p.sz) < NEAR_UPRIGHT_SZ ? 0.25 : 1;
-      state.absLat = a === 1 ? p.lat : state.holdLat + (p.lat - state.holdLat) * a;
-      state.holdLat = state.absLat;
+      // 横向不可测：读数无物理意义，平滑归零让气泡回中。
+      // 不能「冻结最后一帧」也不能「保持最近可信值」——两者都会把进入竖立瞬间被 1/|sz| 放大的偏值（常见 ±3~10°）
+      // 凝固在画面上，表现就是圆球突然向左/向右漂走并停住。
+      state.absLat += (0 - state.absLat) * 0.2;
+      if (Math.abs(state.absLat) < 0.05) state.absLat = 0;
     }
-    state.lat = state.absLat - (state.hasCal ? state.calLat : 0);
+    state.holdLat = state.absLat;
+    // 竖立时横向强制为 0（不再扣校准零点，否则会显示 -calLat 而偏在一边）
+    state.lat = state.upright ? 0 : state.absLat - (state.hasCal ? state.calLat : 0);
     state.lon = p.lon - (state.hasCal ? state.calLon : 0);
     var t = Math.sqrt(state.lat*state.lat + state.lon*state.lon);
     state.tot = t;
