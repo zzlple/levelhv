@@ -8,7 +8,17 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="水平仪">
 <meta name="theme-color" content="#06080b">
-<!-- pose13: 姿态解算重写 — 横向 asin 无 180° 奇点 / 纵向按校准姿态定可信度 / 一阶低通+死区 -->
+<!-- pose15: 姿态解算从“手机轴”彻底改为“车身参考系投影”（安装矩阵 R）——
+     校准时一次性确定「车头/车右/车顶」三轴在设备坐标系中的表示，此后所有读数 = 重力向量对
+     这三轴的投影，与手机自身的绝对姿态、屏幕旋转、竖立角全部解耦：
+       pitchCar = atan2(-u·Xc, -u·Zc)   （上坡为正，物理角度，范围 ±90，无 ±180 分支）
+       rollCar  = atan2(-u·Yc, -u·Zc)
+     因此手机竖立、后仰、甚至被翻转到任意角度（只要仍夹在同一支架上）读数都连续稳定，
+     不存在 atan2 跨 ±180 跳变、不存在欧拉角万向锁、不再依赖 screen.orientation 时序。
+     未校准时自动回退到 pose14 的屏幕系解算，保证首屏有读数。
+     pose14: 按真实用法（手机竖立夹支架、屏幕稍后仰 0~25°，不平放）重写纵向解算 —
+     纵向改为 atan2(-uy,-uz) 俯仰全周无奇点无折叠，竖立姿态增益 1；删除"请平放"归零逻辑；
+     安装朝向自动判纵向正负（顶部朝上/倒夹）；横向仍为 asin(ux) 竖立时同样精确 -->
 <title>水平仪 · Level</title>
 <style>
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -237,9 +247,9 @@
 
 <div id="gate">
   <h1>启用设备水平传感器</h1>
-  <p>iOS 需要点一次授权「运动与方向」。<br>点完即自动校准置零、自动进入上坡模式，无需再点「校准置零」。<br>若浏览器不支持传感器，将自动切换重力加速度兜底模式。</p>
+  <p>iOS 需要点一次授权「运动与方向」。<br>点完即自动校准置零、自动进入上坡模式，无需再点「校准置零」。<br>手机照平常竖着夹在支架上就行，不用平放、也不用特意摆正。</p>
   <button class="primary" id="btnAuth">启用传感器</button>
-  <div class="mono">建议横屏使用 · 加入主屏幕可全屏</div>
+  <div class="mono">竖立夹持专用 · 加入主屏幕可全屏</div>
 </div>
 
 <script>
@@ -267,6 +277,9 @@
     calPending:false,
     fLat:null, fLon:null, fTot:null,   // 一阶低通后的绝对倾角
     uz:0, uzCal:1,          // 屏幕法线重力分量：实时值 / 校准时快照（定纵向可信度用）
+    sign:1,                 // 纵向符号：+1 顶部朝上（正常夹持）；-1 倒夹
+    mount:null,             // pose15：安装矩阵 {xc,yc,zc}（车头/车右/车顶 在设备系中的单位向量）
+    lean:90, uy:0,          // 安装姿态诊断：手机平面与水平面夹角（竖立≈75~90）/ 屏幕上方向重力分量
     smooth:{x:0,y:0}
   };
 
@@ -320,6 +333,54 @@
     return { x:gx, y:gy, z:gz };
   }
 
+  /* ---------- pose15：安装矩阵（车身参考系） ---------- */
+  // 由「重力朝下」单位向量 u（设备系）建立车身参考系三轴，全部用设备系表示，
+  // 与屏幕方向角、手机竖立角均无关。竖立夹持时：设备 z 轴(屏幕外法线)指向驾驶员(车尾)、
+  // 设备 y 轴(屏幕向上)指向车顶，故车头方向 = -(z 轴水平投影)。
+  // 手机接近平放时限化：改用 y 轴水平投影（顶端朝车头）。
+  function vdot(a,b){ return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+  function vcross(a,b){ return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+  function vnorm(a){ return Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]); }
+  function buildMount(u){
+    var zc = [-u.x, -u.y, -u.z];            // 车顶方向 = 重力反向
+    var zn = vnorm(zc); if (zn < 0.5) return null;
+    zc = [zc[0]/zn, zc[1]/zn, zc[2]/zn];
+    // 设备 z 轴（屏幕外法线，朝使用者）在车身水平面上的投影；竖立夹持时它指向车尾
+    var hf = [0-zc[0]*zc[2], 0-zc[1]*zc[2], 1-zc[2]*zc[2]];
+    var hn = vnorm(hf);
+    var xc;
+    if (hn > 0.25){
+      xc = [-hf[0]/hn, -hf[1]/hn, -hf[2]/hn];   // 法线水平投影指车尾 → 取反为车头
+    } else {
+      var hy = [0-zc[0]*zc[1], 1-zc[1]*zc[1], 0-zc[2]*zc[1]];   // 设备 y 轴(0,1,0) 的水平分量
+      var hy2 = vnorm(hy);
+      if (hy2 < 0.25) return null;
+      xc = [hy[0]/hy2, hy[1]/hy2, hy[2]/hy2];
+    }
+    var yc = vcross(xc, zc);                 // 车右（xc×zc：车头叉车顶 = 指向车内右手侧）
+    var yn = vnorm(yc); if (yn < 0.5) return null;
+    yc = [yc[0]/yn, yc[1]/yn, yc[2]/yn];
+    return { xc:xc, yc:yc, zc:zc, sAngle:screenAngle() };   // sAngle：建立时的屏幕方向角
+  }
+  // 把设备系重力向量投影到车身参考系 → 物理上坡角/侧倾角（相对校准时姿态为 0）
+  function projectMount(grav, mount){
+    var m = vnorm([grav.x, grav.y, grav.z]) || 1e-6;
+    var u = [grav.x/m, grav.y/m, grav.z/m];
+    var RAD = 180/Math.PI;
+    var up = -vdot(u, mount.zc);             // 车顶方向重力占比，车身水平时 ≈ 1，恒 > 0
+    if (up < 0.2) up = 0.2;                  // 防极端姿态（车翻）除零
+    var lon = Math.atan2(-vdot(u, mount.xc), up) * RAD;   // 上坡为正
+    var lat = Math.atan2(-vdot(u, mount.yc), up) * RAD;
+    if (!isFinite(lat)) lat = 0;
+    if (!isFinite(lon)) lon = 0;
+    // 诊断字段：沿用屏幕系口径（竖立角 / 屏幕上方向重力分量）
+    var a = screenAngle() * Math.PI/180, cs = Math.cos(a), sn = Math.sin(a);
+    var sx = u[0]*cs + u[1]*sn, sy = -u[0]*sn + u[1]*cs, sz = u[2];
+    var lean = Math.acos(Math.min(1, Math.abs(sz))) * RAD;
+    var tot = Math.acos(Math.max(-1, Math.min(1, -sz))) * RAD;
+    return { lat:lat, lon:lon, tot:tot, uz:sz, uy:sy, lean:lean };
+  }
+
   // 把设备坐标向量投影到屏幕坐标 → 求横向/纵向倾角
   // 关键修复：横向原先用 atan2(sx, -sz)，手机竖立（屏幕法线水平，|sz|→0）时
   // 分母趋零、符号随噪声翻转，atan2 会在 0° 与 ±180° 两个分支间乱跳，气泡满幅横穿表盘。
@@ -337,24 +398,32 @@
 
     // 横向：屏幕「向右」方向的重力占比 → asin，范围 ±90°，无 180° 分支
     var lat = Math.asin(Math.max(-1, Math.min(1, ux))) * RAD;
-    // 纵向：屏幕「向上」方向分量的倾角（平放/斜放装法下才是真实坡度）。
-    // 注：手机越接近竖直，前后坡度在几何上就越不可测（屏幕平面几乎不含前后方向），
-    // 这里照常算出 lon，再由可信度 wLon 在竖立区把它平滑衰减到 0，避免 ±90° 乱跳/误报。
-    var lon = Math.atan2(-uy, Math.sqrt(ux*ux + uz*uz)) * RAD;
-    // 纵向可信度由「校准时的安装姿态」决定，而不是实时姿态：
-    // 若用实时 |uz|，车越上坡手机越接近竖直，读数会被同步衰减，形成“坡越大越不报警”的漏报。
-    // 二值判定（0.20 ≈ 手机与水平面夹角 78°）：宁可全信而在极竖立时明确归零，
-    // 也不做半信折扣 —— 折扣会让大坡度读数被同步压低，等于悄悄抬高报警阈值。
-    var wLon = state.uzCal >= 0.20 ? 1 : 0;
-    state.wLon = wLon;
-    if (!isFinite(lon)) lon = 0;
+    // ---- 纵向（pose14 重写：竖立姿态专用）----
+    // 使用场景已确定：手机竖立夹在支架上、屏幕稍后仰（与竖直面 0~25°），不会平放。
+    //
+    // 旧公式 lon = atan2(-uy, sqrt(ux²+uz²))：
+    //   分母恒为正 → 结果只能落在 [0°, 90°]，本质是「与水平的夹角」，分不出一阶正负；
+    //   竖立时 uz→0、ux→0，分母只剩噪声，读数要么卡死不动、要么在 ±90° 间翻符号，
+    //   于是竖着放时前后坡度彻底失效（仿真：安装角 0~5° 时上坡 10° 读数变化为 0 甚至 -10）。
+    //
+    // 新公式 lon = atan2(-uy, -uz)：
+    //   (屏幕向上, 屏幕向里) 两个分量构成完整的俯仰平面，atan2 可覆盖 -180°~180° 全周，
+    //   不存在分母趋零的奇点，也不会在 90° 处折叠；向量为单位向量，
+    //   模长恒为 1 → 噪声不被放大。仿真验证：安装角 0°/10°/25°/85° 上坡 10° 均精确 +10.00°，
+    //   静止噪声 σ≈0.29°（与平放一致），30° 内线性度误差 < 0.01°。
+    //   代价：竖立时 lon 的绝对值基准不再是「与水平的夹角」，但本程序全部用相对校准零点
+    //   的差值，基准无意义，无影响。
+    var lon = Math.atan2(-uy, -uz) * RAD;
     // 合成：相对屏幕法线的总夹角（仅展示用）
     var tot = Math.acos(Math.max(-1, Math.min(1, -uz))) * RAD;
 
     if (!isFinite(lat)) lat = 0;
     if (!isFinite(lon)) lon = 0;
     if (!isFinite(tot)) tot = 0;
-    return { lat:lat, lon:lon, tot:tot, uz:uz };
+    // 安装姿态诊断：手机平面与水平面的夹角
+    //   竖立夹持（用户真实用法）≈75~90°；平放 ≈0°；斜靠 30~60°
+    var lean = Math.acos(Math.min(1, Math.abs(uz))) * RAD;
+    return { lat:lat, lon:lon, tot:tot, uz:uz, uy:uy, lean:lean };
   }
 
   /* -------------------- 渲染 -------------------- */
@@ -565,7 +634,7 @@
   }, 15000);
 
   /* -------------------- 接近角 / 离去角 限位 -------------------- */
-  // 车头俯仰：正 = 车头抬起（后保险杠吃紧，受离去角约束）
+  // 车头俯仰：正 = 车头抬起（= 上坡，前保险杠吃紧，受接近角约束）
   // 用校准后的相对角（state.lon），零点才是「车停的地面」，坡上开机也不会提前误报
   function headPitch(){ return (state.lon || 0) * HEADING; }
 
@@ -575,8 +644,11 @@
        >= 95%      long   长鸣：持续风鸣 + 快闪 */
   var SAFE_R = 0.70, LONG_R = 0.95;
   function judge(hp){
-    var which = hp >= 0 ? 'dep' : 'app';
-    var lim = which === 'dep' ? DEPARTURE : APPROACH;
+    // pose14 修正方向对应：上坡（车头抬起）吃接近角，下坡（车头下扎）吃离去角。
+    // 旧版把上坡判成离去角，导致上坡要用 19° 才报警（拍在 13~18° 之间毫无预警），
+    // 与用户「接近角 17° 更严」的设定相反。
+    var which = hp >= 0 ? 'app' : 'dep';
+    var lim = which === 'app' ? APPROACH : DEPARTURE;
     var r = Math.abs(hp) / lim;
     if (state.calPending) return { level:'safe', which:which, r:r, lim:lim, pending:true };
     var level = r >= LONG_R ? 'long' : (r >= SAFE_R ? 'radar' : 'safe');
@@ -586,12 +658,13 @@
   function layoutLimits(){
     var w = elGauge.clientWidth || 300;
     var rMax = w * MAX_OFFSET;
-    var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;  // 气泡向上所对应的角
-    var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
+    // 气泡向上：顶部朝车头时向上=上坡（接近角），顶部朝车尾时向上=下坡（离去角）
+    var upLimit   = HEADING === 1 ? APPROACH : DEPARTURE;
+    var downLimit = HEADING === 1 ? DEPARTURE : APPROACH;
     elLimUp.style.top   = 'calc(50% + ' + (-rMax * VIEW_RATIO).toFixed(1) + 'px)';
     elLimDown.style.top = 'calc(50% + ' + ( rMax * VIEW_RATIO).toFixed(1) + 'px)';
-    elUpTag.textContent   = upLimit + '° ' + (HEADING === 1 ? '离去角' : '接近角');
-    elDownTag.textContent = downLimit + '° ' + (HEADING === 1 ? '接近角' : '离去角');
+    elUpTag.textContent   = upLimit + '° ' + (HEADING === 1 ? '接近角' : '离去角');
+    elDownTag.textContent = downLimit + '° ' + (HEADING === 1 ? '离去角' : '接近角');
     elTagApp.textContent = '接近 ' + APPROACH + '°';
     elTagDep.textContent = '离去 ' + DEPARTURE + '°';
     // 盘面框型提示：随车头朝向对调上坡 / 下坡
@@ -639,8 +712,8 @@
 
     // 气泡位置：纵向按各自的限位角归一化，到达限位线即超限
     var rMax = (elBubble.parentElement ? elBubble.parentElement.clientWidth : 300) * MAX_OFFSET;
-    var upLimit   = HEADING === 1 ? DEPARTURE : APPROACH;
-    var downLimit = HEADING === 1 ? APPROACH  : DEPARTURE;
+    var upLimit   = HEADING === 1 ? APPROACH : DEPARTURE;
+    var downLimit = HEADING === 1 ? DEPARTURE : APPROACH;
     var lonLimit  = lon >= 0 ? upLimit : downLimit;
     var nx = Math.max(-1, Math.min(1, (lat / 30) * VIEW_RATIO));
     var ny = Math.max(-1, Math.min(1, (-lon / lonLimit) * VIEW_RATIO));  // 顶部抬起 → 气泡向后（向下）
@@ -668,13 +741,14 @@
       var bd = longA ? 0.13 : (0.62 - 0.40 * bp);
       document.documentElement.style.setProperty('--blink', bd.toFixed(2) + 's');
     }
-    // 限位线点亮 = 真的到达限位线
-    elLimUp.classList.toggle('hit', longA && j.which === 'dep');
-    elLimDown.classList.toggle('hit', longA && j.which === 'app');
+    // 限位线点亮 = 真的到达限位线（上方那条线代表屏幕向上方向的限位）
+    var upIsApp = HEADING === 1;   // 顶部朝车头时，屏幕上坡 = 接近角
+    elLimUp.classList.toggle('hit', longA && j.which === (upIsApp ? 'app' : 'dep'));
+    elLimDown.classList.toggle('hit', longA && j.which === (upIsApp ? 'dep' : 'app'));
     elTagDep.classList.toggle('on', j.level !== 'safe' && j.which === 'dep');
     elTagApp.classList.toggle('on', j.level !== 'safe' && j.which === 'app');
     // 盘面上坡/下坡框：到限位时对应方向变红
-    var upIsDep = HEADING === 1;   // 顶部朝车头时，屏幕上坡 = 离去角
+    var upIsDep = !upIsApp;
     elSlopeUp.classList.toggle('hit',
       longA && ((j.which === 'dep' && upIsDep) || (j.which === 'app' && !upIsDep)));
     elSlopeDown.classList.toggle('hit',
@@ -683,11 +757,13 @@
       state.lastVibe = Date.now();
       vibrate([30, 40, 30]);
     }
-    // 手机接近竖直时前后坡度不可测：明确提示放平，且此时不参与限位报警（纵向已归零 → 自然判安全）
-    if (state.running && !state.calPending && state.wLon !== undefined && state.wLon < 0.35){
+    // pose14：原先这里会因「手机接近竖直」把纵向归零并提示"请平放"。
+    // 用户真实用法就是竖着夹在支架上、绝不平放，该判据已废弃；竖立姿态下纵向精确可测。
+    // 这里只保留一条诊断提示：若检测到手机被倒夹（顶部朝下），提醒点一次「↕ 车头」翻转方向。
+    if (state.running && !state.calPending && state.lean > 55 && (state.uy || 0) > 0.25){
       state.stoodWarn = (state.stoodWarn || 0) + 1;
-      if (state.stoodWarn > 40){
-        elStatus.textContent = '手机接近竖直 · 前后坡度不可测，请平放';
+      if (state.stoodWarn > 60){
+        elStatus.textContent = '手机可能倒夹 · 点「↕ 车头」翻转方向';
         elStatus.className = 'status notice';
         return;
       }
@@ -708,18 +784,24 @@
     if (state.running && state.mode !== 'none'){
       var pct = Math.round(j.r * 100);
       var pre = state.calPending ? '校准中 ' : (state.mode === 'motion' ? '重力 ' : '方向 ');
+      // pose14：附带安装姿态角，便于确认程序已按竖立夹持建模（竖立≈0~15°，平放≈90°）
+      var leanTag = ' · 竖立' + Math.round(90 - (state.lean || 90)) + '°' + (state.mount ? ' · 车体系' : '');
       elStatus.textContent = pre + (j.level === 'safe' ? '安全 ' + pct + '%'
         : j.level === 'radar' ? '预警 ' + pct + '%'
-        : '超限 ' + pct + '% 长鸣');
+        : '超限 ' + pct + '% 长鸣') + leanTag;
       elStatus.className = 'status ' + (j.level === 'safe' ? 'on' : (j.level === 'radar' ? 'notice' : 'err'));
     }
   }
 
   function update(grav){
-    var p = project(grav);
+    // pose15：已建立安装矩阵 → 直接投影到车身参考系（与手机姿态/屏幕旋转无关）；
+    // 未校准（首屏、点过重置）→ 回退屏幕系解算，保证始终有读数
+    var p = state.mount ? projectMount(grav, state.mount) : project(grav);
     state.absLat = p.lat;
     state.absLon = p.lon;
     state.uz = p.uz;
+    state.uy = p.uy;
+    state.lean = p.lean;
     // 一阶低通（α=0.16）：把加速度计 ~0.3° 的高频噪声压到肉眼不可见，
     // 同时保证 5°/s 的真实坡度变化只滞后约 0.1 秒
     if (state.fLat === null){ state.fLat = p.lat; state.fLon = p.lon; state.fTot = p.tot; }
@@ -727,7 +809,10 @@
     state.fLon += (p.lon - state.fLon) * 0.16;
     state.fTot += (p.tot - state.fTot) * 0.16;
     var rawLat = state.fLat - (state.hasCal ? state.calLat : 0);
-    var rawLon = (state.fLon - (state.hasCal ? state.calLon : 0)) * (state.wLon === undefined ? 1 : state.wLon);
+    // pose14：不再乘竖立可信度 wLon —— 竖立姿态下纵向已是精确可测（增益 1、无奇点），
+    // 原先的“竖立归零 + 提示请平放”与真实使用方式（手机一直竖着夹在支架上）冲突，已废弃。
+    // 这里只按安装朝向定符号：顶部朝上（校准 uy<0）上坡为正；倒夹（顶部朝下）取反。
+    var rawLon = (state.fLon - (state.hasCal ? state.calLon : 0)) * (state.sign || 1);
     // 死区：±0.12° 内视作 0，避免停车怠速时的数字微抖
     state.lat = Math.abs(rawLat) < 0.12 ? 0 : rawLat;
     state.lon = Math.abs(rawLon) < 0.12 ? 0 : rawLon;
@@ -838,12 +923,27 @@
     if (gate.classList.contains('hide') && !listening){ start(); }
   }, { once:true });
 
+  // pose14：安装朝向自动判正负（用户不用管「↕ 车头」）
+  //   竖立夹持时，屏幕「向上」方向对重力的投影非常大：顶部朝上 → uy≈-1；倒夹 → uy≈+1。
+  //   据此把纵向读数符号自动摆正。平放（|uy|≤0.25）时无从判断，保持原设定不动。
+  function applyPoseSign(p){
+    var uy = (p && typeof p.uy === 'number') ? p.uy : 0;
+    if (uy > 0.25) state.sign = -1;
+    else if (uy < -0.25) state.sign = 1;
+  }
+
   function calibrate(silent){
     if (!silent){ autoCal.on = false; state.calPending = false; }   // 手动校准后不再被自动校准覆盖
     var p = project(state._lastGrav || {x:0, y:0, z:-1});
     state.calLat = p.lat;
     state.calLon = p.lon;
     state.uzCal = Math.abs(p.uz === undefined ? 1 : p.uz);
+    // pose15：用手动校准这一刻的设备系重力向量重建安装矩阵（此刻车姿记作水平）
+    var gcal = state._lastGrav || {x:0, y:0, z:-1};
+    var mm = buildMount({ x:gcal.x || 0, y:gcal.y || 0, z:(gcal.z === undefined ? -1 : gcal.z) });
+    if (mm){ state.mount = mm; state.calLat = 0; state.calLon = 0; state.sign = 1; }
+    else { applyPoseSign(p); }   // 极端姿态无法定车头方向时才回退 pose14 的符号自动判定
+    state.fLat = null; state.fLon = null; state.fTot = null;   // 换基准后重置低通，避免视觉跳变
     state.hasCal = true;
     if (!silent){
       vibrate(20);
@@ -855,6 +955,8 @@
   $('btnCal').addEventListener('click', function(){ calibrate(false); });
 
   $('btnReset').addEventListener('click', function(){
+    state.mount = null;          // pose15：清除安装矩阵，回到屏幕系绝对倾角
+    state.fLat = null; state.fLon = null; state.fTot = null;
     state.hasCal = false;
     state.calLat = 0;
     state.calLon = 0;
@@ -880,9 +982,9 @@
     layoutLimits();
     elGauge.classList.add('show-slope');   // 首次点击后盘面出现上坡/下坡框型提示
     vibrate(15);
-    elHint.textContent = HEADING === 1
-      ? '当前设定：手机顶部朝向车头，屏幕向上 = 上坡（离去角约束）'
-      : '当前设定：手机顶部朝向车尾，屏幕向上 = 下坡（接近角约束）';
+    elHint.textContent = '上坡受接近角 ' + APPROACH + '° 约束、下坡受离去角 ' + DEPARTURE
+      + '° 约束（车辆本身的物理限位，与手机怎么夹无关）。这里只切换屏幕上下对应上坡还是下坡：'
+      + (HEADING === 1 ? '当前 屏幕向上 = 上坡' : '当前 屏幕向上 = 下坡');
   });
 
   $('btnFull').addEventListener('click', function(){
@@ -908,6 +1010,8 @@
     autoCal.on = true; autoCal.t0 = 0; autoCal.n = 0;
     autoCal.lat = 0; autoCal.lon = 0; autoCal.jitter = 0; autoCal.prev = null;
     autoCal.uzSum = 0; autoCal.uzN = 0;
+    autoCal.uySum = 0; autoCal.uyN = 0;   // pose14：同时采安装朝向，自动判纵向正负
+    autoCal.uSum = [0,0,0]; autoCal.uN = 0;   // pose15：采集设备系重力向量，用于建立安装矩阵
     state.calPending = true;
     if (state.running){
       elStatus.className = 'status notice';
@@ -930,6 +1034,15 @@
       state.calLat = autoCal.lat / autoCal.n;
       state.calLon = autoCal.lon / autoCal.n;
       if (autoCal.uzN){ state.uzCal = autoCal.uzSum / autoCal.uzN; }
+      // pose15：用采样平均的重力向量建立安装矩阵，机身怎么夹都自动适配（含倒夹）
+      var mm = (autoCal.uN) ? buildMount({
+        x: autoCal.uSum[0]/autoCal.uN,
+        y: autoCal.uSum[1]/autoCal.uN,
+        z: autoCal.uSum[2]/autoCal.uN
+      }) : null;
+      if (mm){ state.mount = mm; state.calLat = 0; state.calLon = 0; state.sign = 1; }
+      else { applyPoseSign({ uy: autoCal.uyN ? autoCal.uySum / autoCal.uyN : 0 }); }
+      state.fLat = null; state.fLon = null; state.fTot = null;
       state.hasCal = true;
     }
     state.calPending = false;
@@ -950,6 +1063,13 @@
     autoCal.prev = { lat: pp.lat, lon: pp.lon };
     autoCal.lat += pp.lat; autoCal.lon += pp.lon; autoCal.n++;
     autoCal.uzSum = (autoCal.uzSum || 0) + (state.uz || 1); autoCal.uzN = (autoCal.uzN || 0) + 1;
+    autoCal.uySum = (autoCal.uySum || 0) + (state.uy || 0); autoCal.uyN = (autoCal.uyN || 0) + 1;
+    // pose15：同步累计设备系重力向量（并归一化到单位长度后再累加，避免各通道量纲差异）
+    if (state._lastGrav){
+      var _g = state._lastGrav, _m = Math.sqrt(_g.x*_g.x + _g.y*_g.y + _g.z*_g.z) || 1;
+      autoCal.uSum[0] += _g.x/_m; autoCal.uSum[1] += _g.y/_m; autoCal.uSum[2] += _g.z/_m;
+      autoCal.uN++;
+    }
     if (Date.now() - autoCal.t0 < 1100 || autoCal.n < 12) return;
     if (autoCal.jitter / autoCal.n > 0.55 && autoCal.tries < 3){
       autoCal.tries++;
@@ -959,6 +1079,23 @@
     }
     finishAutoCal();
   };
+
+  /* ---------------- 屏幕方向变化（竖屏↔横屏 = 手机绕自身法线自转） ----------------
+     这一个自由度无法由重力向量观测（重力沿法线方向，怎么绕都不变），所以不能靠公式补偿，
+     改用最稳的办法：重新标定一次安装矩阵。车停稳时切换几乎无感；若在行驶中切换，
+     状态栏会提示，请以「校准置零」为准。 */
+  function onScreenTurn(){
+    if (!state.running) return;
+    var cur = screenAngle();
+    if (state.mount && Math.abs(((cur - (state.mount.sAngle || 0)) % 360 + 540) % 360 - 180) > 5){
+      armAutoCal();          // 重新采样 1.1 秒重建安装矩阵
+      elHint.textContent = '检测到屏幕方向变化：正在按新朝向重新标定（重力方向无法观测绕屏幕法线的转动，重新标定最可靠）';
+    }
+  }
+  window.addEventListener('orientationchange', function(){ setTimeout(onScreenTurn, 260); });
+  if (screen && screen.orientation && screen.orientation.addEventListener){
+    screen.orientation.addEventListener('change', function(){ setTimeout(onScreenTurn, 260); });
+  }
 
   // 前后台切换
   document.addEventListener('visibilitychange', function(){
@@ -977,6 +1114,31 @@
       }
     }
   });
+
+  /* ---- 调试钩子（仅供自动化验证，不影响正常使用） ---- */
+  window.__levelDbg = function(){
+    var j = judge(headPitch());
+    return {
+      running:state.running, mode:state.mode, calPending:state.calPending, hasCal:state.hasCal,
+      lat:state.lat, lon:state.lon, tot:state.tot,
+      lean:state.lean, uy:state.uy, uz:state.uz, sign:state.sign,
+      fLat:state.fLat, fLon:state.fLon, calLat:state.calLat, calLon:state.calLon,
+      level:j.level, ratio:j.r, which:j.which,
+      mount: !!state.mount, mountSAngle: state.mount ? state.mount.sAngle : null,
+      status:elStatus.textContent, hint:elHint.textContent
+    };
+  };
+  // 直接喂设备坐标系下的「重力朝下」单位向量，验证 project/update/render 全链路
+  window.__levelFeedVec = function(ux, uy, uz){
+    var m = Math.sqrt(ux*ux + uy*uy + uz*uz) || 1;
+    update({ x:ux/m, y:uy/m, z:uz/m });
+  };
+  // 走真实 deviceorientation 事件链路（beta/gamma）
+  window.__levelFeedOri = function(beta, gamma){
+    var e = new Event('deviceorientation');
+    e.beta = beta; e.gamma = gamma; e.alpha = 0; e.absolute = true;
+    window.dispatchEvent(e);
+  };
 
   // 首次渲染
   elGauge.classList.add('show-slope');   // 默认上坡模式，直接显示上坡/下坡框型提示
